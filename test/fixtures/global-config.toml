@@ -1,0 +1,9 @@
+version = 1
+
+[[rules.command]]
+match.argv = ["codex"]
+inject.global = ["OPENAI_API_KEY"]
+
+[[rules.command]]
+match.argv_prefix = ["uv", "run"]
+inject.global = ["DEEPSEEK_API_KEY"]

@@ -1,0 +1,14 @@
+version = 1
+
+[project]
+name = "acme"
+
+[rules.directory]
+global = ["OPENAI_API_KEY"]
+
+[[rules.command]]
+match.argv_prefix = ["uv", "run", "rag.py"]
+inject.project = ["DATABASE_URL"]
+
+[bindings]
+DATABASE_URL = { account = "staging/database_url" }

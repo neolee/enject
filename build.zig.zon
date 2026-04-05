@@ -1,0 +1,7 @@
+.{
+    .name = .enject,
+    .version = "0.0.1",
+    .minimum_zig_version = "0.16.0-dev.3091+557caecaa",
+    .paths = .{""},
+    .fingerprint = 0xccc6658ba7180359,
+}

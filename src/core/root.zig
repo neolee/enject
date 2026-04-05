@@ -1,1 +1,1 @@
-pub const placeholder = struct {};
+pub const resolver = @import("resolver.zig");

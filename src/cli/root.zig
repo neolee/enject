@@ -18,7 +18,7 @@ pub const ParsedCommand = union(enum) {
     help,
     trust,
     explain: ExplainCommand,
-    run: []const []const u8,
+    run: RunCommand,
     secret: SecretCommand,
     import_env: ImportCommand,
 };
@@ -26,6 +26,11 @@ pub const ParsedCommand = union(enum) {
 pub const ExplainCommand = struct {
     command_argv: []const []const u8,
     check: bool = false,
+};
+
+pub const RunCommand = struct {
+    command_argv: []const []const u8,
+    verbose: bool = false,
 };
 
 pub const SecretCommand = union(enum) {
@@ -145,33 +150,57 @@ pub fn deinitRuntime(allocator: std.mem.Allocator, runtime: *Runtime) void {
 pub fn parseCommand(args: []const []const u8) !ParsedCommand {
     if (args.len <= 1) return .help;
 
-    const verb = args[1];
+    var verbose = false;
+    var index: usize = 1;
+    while (index < args.len) : (index += 1) {
+        const arg = args[index];
+        if (std.mem.eql(u8, arg, "--verbose")) {
+            verbose = true;
+            continue;
+        }
+        break;
+    }
+
+    if (index >= args.len) return .help;
+
+    const verb = args[index];
     if (std.mem.eql(u8, verb, "-h") or std.mem.eql(u8, verb, "--help") or std.mem.eql(u8, verb, "help")) {
+        if (verbose) return error.UnexpectedArgument;
         return .help;
     }
     if (std.mem.eql(u8, verb, "trust")) {
-        if (args.len != 2) return error.UnexpectedArgument;
+        if (verbose or args.len != index + 1) return error.UnexpectedArgument;
         return .trust;
     }
     if (std.mem.eql(u8, verb, "explain")) {
-        return .{ .explain = try parseExplainCommand(args[2..], false) };
+        if (verbose) return error.UnexpectedArgument;
+        return .{ .explain = try parseExplainCommand(args[index + 1 ..], false) };
     }
     if (std.mem.eql(u8, verb, "doctor")) {
-        return .{ .explain = try parseExplainCommand(args[2..], true) };
+        if (verbose) return error.UnexpectedArgument;
+        return .{ .explain = try parseExplainCommand(args[index + 1 ..], true) };
     }
     if (std.mem.eql(u8, verb, "run")) {
-        return .{ .run = trimCommandSeparator(args[2..]) };
+        return .{ .run = try parseRunCommand(args[index + 1 ..], verbose) };
     }
     if (std.mem.eql(u8, verb, "secret")) {
-        return .{ .secret = try parseSecretCommand(args[2..]) };
+        if (verbose) return error.UnexpectedArgument;
+        return .{ .secret = try parseSecretCommand(args[index + 1 ..]) };
     }
     if (std.mem.eql(u8, verb, "import")) {
-        return .{ .import_env = try parseImportCommand(args[2..]) };
+        if (verbose) return error.UnexpectedArgument;
+        return .{ .import_env = try parseImportCommand(args[index + 1 ..]) };
     }
     if (std.mem.eql(u8, verb, "--")) {
-        return .{ .run = args[2..] };
+        return .{ .run = .{
+            .command_argv = args[index + 1 ..],
+            .verbose = verbose,
+        } };
     }
-    return .{ .run = args[1..] };
+    return .{ .run = .{
+        .command_argv = args[index..],
+        .verbose = verbose,
+    } };
 }
 
 pub fn trustNearestConfigAlloc(
@@ -344,6 +373,7 @@ pub fn runCommand(
     allocator: std.mem.Allocator,
     runtime: Runtime,
     command_argv: []const []const u8,
+    verbose: bool,
     warning_writer: anytype,
 ) !RunResult {
     if (command_argv.len == 0) return error.MissingCommand;
@@ -377,7 +407,7 @@ pub fn runCommand(
         });
     }
 
-    if (missing_secrets.items.len > 0) {
+    if (verbose and missing_secrets.items.len > 0) {
         for (missing_secrets.items) |missing_secret| {
             try warning_writer.print(
                 "warning: value not available for {s} ({s}); skipping injection\n",
@@ -508,8 +538,8 @@ pub fn printUsage(writer: anytype, program_name: []const u8) !void {
         \\  {s} secret rm <name>
         \\  {s} import <key-file> [--project <project-name>] [--key <env-key>]
         \\  {s} explain [--check] [--] [command] [args...]
-        \\  {s} run -- <command> [args...]
-        \\  {s} <command> [args...]
+        \\  {s} [--verbose] run [--verbose] -- <command> [args...]
+        \\  {s} [--verbose] <command> [args...]
         \\
     , .{ program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name });
 }
@@ -538,6 +568,24 @@ fn parseExplainCommand(args: []const []const u8, default_check: bool) !ExplainCo
     return .{
         .command_argv = trimCommandSeparator(args[index..]),
         .check = check,
+    };
+}
+
+fn parseRunCommand(args: []const []const u8, initial_verbose: bool) !RunCommand {
+    var verbose = initial_verbose;
+    var index: usize = 0;
+    while (index < args.len) : (index += 1) {
+        const arg = args[index];
+        if (std.mem.eql(u8, arg, "--verbose")) {
+            verbose = true;
+            continue;
+        }
+        break;
+    }
+
+    return .{
+        .command_argv = trimCommandSeparator(args[index..]),
+        .verbose = verbose,
     };
 }
 

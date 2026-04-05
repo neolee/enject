@@ -22,11 +22,21 @@ test "cli parseCommand handles help run explain trust and shorthand" {
     try std.testing.expect(doctor_alias.explain.check);
 
     const run_cmd = try cli.parseCommand(&.{ "enject", "run", "--", "uv", "run" });
-    try std.testing.expectEqualStrings("uv", run_cmd.run[0]);
-    try std.testing.expectEqualStrings("run", run_cmd.run[1]);
+    try std.testing.expectEqualStrings("uv", run_cmd.run.command_argv[0]);
+    try std.testing.expectEqualStrings("run", run_cmd.run.command_argv[1]);
+    try std.testing.expect(!run_cmd.run.verbose);
+
+    const run_cmd_verbose = try cli.parseCommand(&.{ "enject", "run", "--verbose", "--", "uv", "run" });
+    try std.testing.expectEqualStrings("uv", run_cmd_verbose.run.command_argv[0]);
+    try std.testing.expect(run_cmd_verbose.run.verbose);
 
     const shorthand = try cli.parseCommand(&.{ "enject", "codex" });
-    try std.testing.expectEqualStrings("codex", shorthand.run[0]);
+    try std.testing.expectEqualStrings("codex", shorthand.run.command_argv[0]);
+    try std.testing.expect(!shorthand.run.verbose);
+
+    const shorthand_verbose = try cli.parseCommand(&.{ "enject", "--verbose", "codex" });
+    try std.testing.expectEqualStrings("codex", shorthand_verbose.run.command_argv[0]);
+    try std.testing.expect(shorthand_verbose.run.verbose);
 
     const secret_put = try cli.parseCommand(&.{ "enject", "secret", "put", "OPENAI_API_KEY", "--value", "abc" });
     try std.testing.expectEqualStrings("OPENAI_API_KEY", secret_put.secret.put.name);
@@ -346,7 +356,7 @@ test "cli runCommand injects resolved environment into child process" {
     var warning_writer: std.Io.Writer.Allocating = .init(allocator);
     defer warning_writer.deinit();
 
-    var run_result = try cli.runCommand(allocator, runtime, &.{ "/bin/sh", "-c", "test \"$OPENAI_API_KEY\" = \"cli-injected-secret\"" }, &warning_writer.writer);
+    var run_result = try cli.runCommand(allocator, runtime, &.{ "/bin/sh", "-c", "test \"$OPENAI_API_KEY\" = \"cli-injected-secret\"" }, false, &warning_writer.writer);
     defer run_result.deinit(allocator);
 
     try std.testing.expectEqualDeep(std.process.Child.Term{ .exited = 0 }, run_result.term);
@@ -398,14 +408,14 @@ test "cli runCommand skips missing secrets and still runs child process" {
     var warning_writer: std.Io.Writer.Allocating = .init(allocator);
     defer warning_writer.deinit();
 
-    var run_result = try cli.runCommand(allocator, runtime, &.{ "/bin/sh", "-c", "test -z \"$OPENAI_API_KEY\"" }, &warning_writer.writer);
+    var run_result = try cli.runCommand(allocator, runtime, &.{ "/bin/sh", "-c", "test -z \"$OPENAI_API_KEY\"" }, false, &warning_writer.writer);
     defer run_result.deinit(allocator);
 
     try std.testing.expectEqualDeep(std.process.Child.Term{ .exited = 0 }, run_result.term);
     try std.testing.expectEqual(@as(usize, 1), run_result.missing_secrets.len);
     try std.testing.expectEqualStrings("OPENAI_API_KEY", run_result.missing_secrets[0].env_name);
     try std.testing.expectEqualStrings("com.github.neolee.enject.tests/openai_api_key", run_result.missing_secrets[0].detail);
-    try std.testing.expect(std.mem.indexOf(u8, warning_writer.written(), "warning: value not available for OPENAI_API_KEY") != null);
+    try std.testing.expectEqualStrings("", warning_writer.written());
 }
 
 test "cli runCommand supports env alias bindings" {
@@ -467,12 +477,64 @@ test "cli runCommand supports env alias bindings" {
     var warning_writer: std.Io.Writer.Allocating = .init(allocator);
     defer warning_writer.deinit();
 
-    var run_result = try cli.runCommand(allocator, runtime, &.{ "/bin/sh", "-c", "test \"$MY_TOOL_API_KEY\" = \"cli-injected-secret\"" }, &warning_writer.writer);
+    var run_result = try cli.runCommand(allocator, runtime, &.{ "/bin/sh", "-c", "test \"$MY_TOOL_API_KEY\" = \"cli-injected-secret\"" }, false, &warning_writer.writer);
     defer run_result.deinit(allocator);
 
     try std.testing.expectEqualDeep(std.process.Child.Term{ .exited = 0 }, run_result.term);
     try std.testing.expectEqual(@as(usize, 0), run_result.missing_secrets.len);
     try std.testing.expectEqualStrings("", warning_writer.written());
+}
+
+test "cli runCommand prints missing value warnings in verbose mode" {
+    const allocator = std.testing.allocator;
+    var env_map = std.process.Environ.Map.init(allocator);
+    defer env_map.deinit();
+
+    var temp_dir = std.testing.tmpDir(.{});
+    defer temp_dir.cleanup();
+
+    const global_config_text =
+        \\version = 1
+        \\
+        \\[[rules.command]]
+        \\match.argv_prefix = ["/bin/sh", "-c"]
+        \\inject.global = ["OPENAI_API_KEY"]
+        \\
+    ;
+
+    try temp_dir.dir.writeFile(std.testing.io, .{
+        .sub_path = "config.toml",
+        .data = global_config_text,
+    });
+
+    const root_path = try support.tempRootPathAlloc(allocator, &temp_dir);
+    defer allocator.free(root_path);
+    const cwd_path = try allocator.dupe(u8, root_path);
+    defer allocator.free(cwd_path);
+    const global_config_path = try std.fs.path.join(allocator, &.{ root_path, "config.toml" });
+    defer allocator.free(global_config_path);
+    const trust_store_path = try std.fs.path.join(allocator, &.{ root_path, "trust.tsv" });
+    defer allocator.free(trust_store_path);
+
+    const runtime = cli.Runtime{
+        .io = std.testing.io,
+        .environ_map = &env_map,
+        .cwd_path = cwd_path,
+        .global_config_path = global_config_path,
+        .trust_store_path = trust_store_path,
+        .service = support.test_service,
+        .keychain_backend = .native,
+    };
+
+    var warning_writer: std.Io.Writer.Allocating = .init(allocator);
+    defer warning_writer.deinit();
+
+    var run_result = try cli.runCommand(allocator, runtime, &.{ "/bin/sh", "-c", "test -z \"$OPENAI_API_KEY\"" }, true, &warning_writer.writer);
+    defer run_result.deinit(allocator);
+
+    try std.testing.expectEqualDeep(std.process.Child.Term{ .exited = 0 }, run_result.term);
+    try std.testing.expectEqual(@as(usize, 1), run_result.missing_secrets.len);
+    try std.testing.expect(std.mem.indexOf(u8, warning_writer.written(), "warning: value not available for OPENAI_API_KEY") != null);
 }
 
 test "cli secret put ls and rm manage keychain entries" {

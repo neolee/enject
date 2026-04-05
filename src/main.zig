@@ -137,8 +137,8 @@ pub fn main(init: std.process.Init) !void {
                 try stdout.flush();
                 break :blk 0;
             },
-            .run => |command_argv| {
-                var run_result = cli.runCommand(allocator, runtime, command_argv, stderr) catch |err| {
+            .run => |run_cmd| {
+                var run_result = cli.runCommand(allocator, runtime, run_cmd.command_argv, run_cmd.verbose, stderr) catch |err| {
                     try stderr.print("error: {s}\n", .{describeError(err)});
                     try stderr.flush();
                     std.process.exit(1);

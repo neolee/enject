@@ -1,0 +1,8 @@
+version = 1
+
+[project]
+name = "acme"
+
+[rules.directory]
+global = ["OPENAI_API_KEY", "XXX_API_KEY"]
+project = ["DATABASE_URL"]

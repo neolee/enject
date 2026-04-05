@@ -19,6 +19,30 @@ pub const ParsedCommand = union(enum) {
     trust,
     explain: []const []const u8,
     run: []const []const u8,
+    secret: SecretCommand,
+    import_env: ImportCommand,
+};
+
+pub const SecretCommand = union(enum) {
+    put: SecretPut,
+    ls,
+    rm: []const u8,
+};
+
+pub const SecretPut = struct {
+    name: []const u8,
+    value: ?[]const u8 = null,
+};
+
+pub const ImportCommand = struct {
+    file_path: []const u8,
+    project_name: ?[]const u8 = null,
+    env_key: ?[]const u8 = null,
+};
+
+pub const ImportedSecret = struct {
+    env_name: []const u8,
+    account: []const u8,
 };
 
 pub const ExplainData = struct {
@@ -31,6 +55,32 @@ pub const ExplainData = struct {
     pub fn deinit(self: *ExplainData, allocator: std.mem.Allocator) void {
         self.context.deinit(allocator);
         self.resolution.deinit(allocator);
+        self.* = undefined;
+    }
+};
+
+pub const MissingSecret = struct {
+    env_name: []const u8,
+    service: []const u8,
+    account: []const u8,
+
+    pub fn deinit(self: *MissingSecret, allocator: std.mem.Allocator) void {
+        allocator.free(self.env_name);
+        allocator.free(self.service);
+        allocator.free(self.account);
+        self.* = undefined;
+    }
+};
+
+pub const RunResult = struct {
+    term: std.process.Child.Term,
+    missing_secrets: []MissingSecret,
+
+    pub fn deinit(self: *RunResult, allocator: std.mem.Allocator) void {
+        for (self.missing_secrets) |*missing_secret| {
+            missing_secret.deinit(allocator);
+        }
+        allocator.free(self.missing_secrets);
         self.* = undefined;
     }
 };
@@ -48,12 +98,15 @@ pub fn defaultRuntimeAlloc(allocator: std.mem.Allocator, init: std.process.Init)
     const trust_store_path = try std.fs.path.join(allocator, &.{ config_dir, "trust.tsv" });
     errdefer allocator.free(trust_store_path);
 
+    const keychain_backend = try resolveKeychainBackend(init.environ_map);
+
     return .{
         .io = init.io,
         .environ_map = init.environ_map,
         .cwd_path = cwd_path,
         .global_config_path = global_config_path,
         .trust_store_path = trust_store_path,
+        .keychain_backend = keychain_backend,
     };
 }
 
@@ -80,6 +133,12 @@ pub fn parseCommand(args: []const []const u8) !ParsedCommand {
     }
     if (std.mem.eql(u8, verb, "run")) {
         return .{ .run = trimCommandSeparator(args[2..]) };
+    }
+    if (std.mem.eql(u8, verb, "secret")) {
+        return .{ .secret = try parseSecretCommand(args[2..]) };
+    }
+    if (std.mem.eql(u8, verb, "import")) {
+        return .{ .import_env = try parseImportCommand(args[2..]) };
     }
     if (std.mem.eql(u8, verb, "--")) {
         return .{ .run = args[2..] };
@@ -134,11 +193,97 @@ pub fn explainAlloc(
     };
 }
 
+pub fn putSecret(
+    allocator: std.mem.Allocator,
+    runtime: Runtime,
+    name: []const u8,
+    value: []const u8,
+) ![]u8 {
+    const account = try secretAccountFromNameAlloc(allocator, name);
+    errdefer allocator.free(account);
+
+    const store = keychain.Store.init(runtime.keychain_backend, runtime.io);
+    try store.writeGenericPassword(allocator, .{
+        .service = runtime.service,
+        .account = account,
+    }, value);
+
+    return account;
+}
+
+pub fn removeSecret(
+    allocator: std.mem.Allocator,
+    runtime: Runtime,
+    name: []const u8,
+) ![]u8 {
+    const account = try secretAccountFromNameAlloc(allocator, name);
+    errdefer allocator.free(account);
+
+    const store = keychain.Store.init(runtime.keychain_backend, runtime.io);
+    try store.deleteGenericPassword(allocator, .{
+        .service = runtime.service,
+        .account = account,
+    });
+
+    return account;
+}
+
+pub fn listSecretsAlloc(
+    allocator: std.mem.Allocator,
+    runtime: Runtime,
+) ![][]u8 {
+    const store = keychain.Store.init(runtime.keychain_backend, runtime.io);
+    return store.listGenericPasswordAccountsAlloc(allocator, runtime.service);
+}
+
+pub fn importSecretsAlloc(
+    allocator: std.mem.Allocator,
+    runtime: Runtime,
+    command: ImportCommand,
+) ![]ImportedSecret {
+    const file_data = try std.Io.Dir.cwd().readFileAlloc(runtime.io, command.file_path, allocator, .unlimited);
+    defer allocator.free(file_data);
+
+    var imported: std.ArrayList(ImportedSecret) = .empty;
+    errdefer {
+        for (imported.items) |item| {
+            allocator.free(item.env_name);
+            allocator.free(item.account);
+        }
+        imported.deinit(allocator);
+    }
+
+    var lines = std.mem.splitScalar(u8, file_data, '\n');
+    while (lines.next()) |raw_line| {
+        const parsed = parseEnvAssignment(raw_line) orelse continue;
+        if (command.env_key) |env_key| {
+            if (!std.mem.eql(u8, parsed.env_name, env_key)) continue;
+        }
+
+        const account = try accountFromEnvNameAlloc(allocator, parsed.env_name, command.project_name);
+        errdefer allocator.free(account);
+
+        const store = keychain.Store.init(runtime.keychain_backend, runtime.io);
+        try store.writeGenericPassword(allocator, .{
+            .service = runtime.service,
+            .account = account,
+        }, parsed.value);
+
+        try imported.append(allocator, .{
+            .env_name = try allocator.dupe(u8, parsed.env_name),
+            .account = account,
+        });
+    }
+
+    return imported.toOwnedSlice(allocator);
+}
+
 pub fn runCommand(
     allocator: std.mem.Allocator,
     runtime: Runtime,
     command_argv: []const []const u8,
-) !std.process.Child.Term {
+    warning_writer: anytype,
+) !RunResult {
     if (command_argv.len == 0) return error.MissingCommand;
 
     var explain_data = try explainAlloc(allocator, runtime, command_argv);
@@ -147,14 +292,42 @@ pub fn runCommand(
     var environ_map = try runtime.environ_map.clone(allocator);
     defer environ_map.deinit();
 
+    var missing_secrets: std.ArrayList(MissingSecret) = .empty;
+    errdefer {
+        for (missing_secrets.items) |*missing_secret| {
+            missing_secret.deinit(allocator);
+        }
+        missing_secrets.deinit(allocator);
+    }
+
     const store = keychain.Store.init(runtime.keychain_backend, runtime.io);
     for (explain_data.resolution.bindings) |binding| {
-        const value = try store.readGenericPasswordAlloc(allocator, .{
+        const value = store.readGenericPasswordAlloc(allocator, .{
             .service = binding.service,
             .account = binding.account,
-        });
+        }) catch |err| switch (err) {
+            error.NotFound => {
+                try missing_secrets.append(allocator, .{
+                    .env_name = try allocator.dupe(u8, binding.env_name),
+                    .service = try allocator.dupe(u8, binding.service),
+                    .account = try allocator.dupe(u8, binding.account),
+                });
+                continue;
+            },
+            else => return err,
+        };
         defer allocator.free(value);
         try environ_map.put(binding.env_name, value);
+    }
+
+    if (missing_secrets.items.len > 0) {
+        for (missing_secrets.items) |missing_secret| {
+            try warning_writer.print(
+                "warning: secret not found for {s} ({s}/{s}); skipping injection\n",
+                .{ missing_secret.env_name, missing_secret.service, missing_secret.account },
+            );
+        }
+        try warning_writer.flush();
     }
 
     var child = try std.process.spawn(runtime.io, .{
@@ -167,48 +340,54 @@ pub fn runCommand(
     });
     defer child.kill(runtime.io);
 
-    return child.wait(runtime.io);
+    return .{
+        .term = try child.wait(runtime.io),
+        .missing_secrets = try missing_secrets.toOwnedSlice(allocator),
+    };
 }
 
 pub fn renderExplain(writer: anytype, data: *const ExplainData) !void {
-    try writer.print("command:", .{});
+    try writer.print("Explain\n", .{});
+    try writer.print("Command:", .{});
     for (data.command_argv) |arg| {
         try writer.print(" {s}", .{arg});
     }
     try writer.print("\n", .{});
 
-    try writer.print("cwd: {s}\n", .{data.cwd_path});
+    try writer.print("Resolution mode: config and rule resolution only (no secrets read)\n", .{});
+    try writer.print("\nContext\n", .{});
+    try writer.print("  cwd: {s}\n", .{data.cwd_path});
     if (data.context.global_config != null and data.global_config_path != null) {
-        try writer.print("global config: {s}\n", .{data.global_config_path.?});
+        try writer.print("  global config: {s}\n", .{data.global_config_path.?});
     } else {
-        try writer.print("global config: none\n", .{});
+        try writer.print("  global config: none\n", .{});
     }
 
     if (data.context.project_root) |path| {
-        try writer.print("project root: {s}\n", .{path});
+        try writer.print("  project root: {s}\n", .{path});
     } else {
-        try writer.print("project root: none\n", .{});
+        try writer.print("  project root: none\n", .{});
     }
 
     if (data.context.trusted_project_config_path) |path| {
-        try writer.print("project config: {s}\n", .{path});
+        try writer.print("  project config: {s}\n", .{path});
     } else {
-        try writer.print("project config: none\n", .{});
+        try writer.print("  project config: none\n", .{});
     }
 
     if (data.context.ignored_untrusted_project_config_path) |path| {
-        try writer.print("ignored untrusted project config: {s}\n", .{path});
+        try writer.print("  ignored untrusted project config: {s}\n", .{path});
     }
 
+    try writer.print("\nBindings\n", .{});
     if (data.resolution.bindings.len == 0) {
-        try writer.print("bindings: none\n", .{});
+        try writer.print("  none\n", .{});
         return;
     }
 
-    try writer.print("bindings:\n", .{});
     for (data.resolution.bindings) |binding| {
         try writer.print(
-            "- {s}: service={s} account={s} lookup={s}\n",
+            "  {s} -> {s}/{s} ({s})\n",
             .{ binding.env_name, binding.service, binding.account, @tagName(binding.lookup) },
         );
     }
@@ -218,11 +397,15 @@ pub fn printUsage(writer: anytype, program_name: []const u8) !void {
     try writer.print(
         \\Usage:
         \\  {s} trust
+        \\  {s} secret put <name> [--value <value>]
+        \\  {s} secret ls
+        \\  {s} secret rm <name>
+        \\  {s} import <key-file> [--project <project-name>] [--key <env-key>]
         \\  {s} explain [--] <command> [args...]
         \\  {s} run -- <command> [args...]
         \\  {s} <command> [args...]
         \\
-    , .{ program_name, program_name, program_name, program_name });
+    , .{ program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name });
 }
 
 pub fn displayProgramName(arg0: []const u8) []const u8 {
@@ -232,6 +415,63 @@ pub fn displayProgramName(arg0: []const u8) []const u8 {
 fn trimCommandSeparator(args: []const []const u8) []const []const u8 {
     if (args.len > 0 and std.mem.eql(u8, args[0], "--")) return args[1..];
     return args;
+}
+
+fn parseSecretCommand(args: []const []const u8) !SecretCommand {
+    if (args.len == 0) return error.MissingSubcommand;
+
+    const verb = args[0];
+    if (std.mem.eql(u8, verb, "ls")) {
+        if (args.len != 1) return error.UnexpectedArgument;
+        return .ls;
+    }
+    if (std.mem.eql(u8, verb, "rm")) {
+        if (args.len != 2) return error.UnexpectedArgument;
+        return .{ .rm = args[1] };
+    }
+    if (std.mem.eql(u8, verb, "put")) {
+        if (args.len == 2) {
+            return .{ .put = .{
+                .name = args[1],
+                .value = null,
+            } };
+        }
+        if (args.len != 4) return error.UnexpectedArgument;
+        if (!std.mem.eql(u8, args[2], "--value")) return error.UnexpectedArgument;
+        return .{ .put = .{
+            .name = args[1],
+            .value = args[3],
+        } };
+    }
+    return error.UnknownSubcommand;
+}
+
+fn parseImportCommand(args: []const []const u8) !ImportCommand {
+    if (args.len == 0) return error.MissingCommand;
+
+    var command: ImportCommand = .{
+        .file_path = args[0],
+    };
+
+    var index: usize = 1;
+    while (index < args.len) : (index += 1) {
+        const arg = args[index];
+        if (std.mem.eql(u8, arg, "--project")) {
+            index += 1;
+            if (index >= args.len) return error.MissingValue;
+            command.project_name = args[index];
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--key")) {
+            index += 1;
+            if (index >= args.len) return error.MissingValue;
+            command.env_key = args[index];
+            continue;
+        }
+        return error.UnexpectedArgument;
+    }
+
+    return command;
 }
 
 fn ensureParentDirExists(io: std.Io, path: []const u8) !void {
@@ -252,9 +492,96 @@ fn defaultConfigDirAlloc(
     return error.MissingHomeDirectory;
 }
 
+pub fn resolveKeychainBackend(environ_map: *std.process.Environ.Map) !keychain.Backend {
+    const override = environ_map.get("ENJECT_KEYCHAIN_BACKEND") orelse return defaultKeychainBackend();
+    if (std.mem.eql(u8, override, "native")) return .native;
+    if (std.mem.eql(u8, override, "security_cli")) return .security_cli;
+    return error.InvalidKeychainBackend;
+}
+
 fn defaultKeychainBackend() keychain.Backend {
     return switch (builtin.os.tag) {
         .macos => .native,
         else => .security_cli,
     };
+}
+
+fn secretAccountFromNameAlloc(allocator: std.mem.Allocator, name: []const u8) ![]u8 {
+    if (std.mem.indexOfScalar(u8, name, '/')) |_| {
+        return allocator.dupe(u8, name);
+    }
+    return resolver.canonicalizeEnvNameAlloc(allocator, name);
+}
+
+fn accountFromEnvNameAlloc(
+    allocator: std.mem.Allocator,
+    env_name: []const u8,
+    project_name: ?[]const u8,
+) ![]u8 {
+    const canonical = try resolver.canonicalizeEnvNameAlloc(allocator, env_name);
+    defer allocator.free(canonical);
+
+    if (project_name) |project| {
+        return std.fs.path.join(allocator, &.{ project, canonical });
+    }
+    return allocator.dupe(u8, canonical);
+}
+
+const ParsedEnvAssignment = struct {
+    env_name: []const u8,
+    value: []const u8,
+};
+
+fn parseEnvAssignment(line: []const u8) ?ParsedEnvAssignment {
+    var trimmed = std.mem.trim(u8, line, " \t\r");
+    if (trimmed.len == 0 or trimmed[0] == '#') return null;
+
+    if (std.mem.startsWith(u8, trimmed, "export ")) {
+        trimmed = std.mem.trim(u8, trimmed["export ".len..], " \t");
+    }
+
+    const eq_index = std.mem.indexOfScalar(u8, trimmed, '=') orelse return null;
+    const env_name = std.mem.trim(u8, trimmed[0..eq_index], " \t");
+    if (env_name.len == 0) return null;
+
+    var value = std.mem.trim(u8, trimmed[eq_index + 1 ..], " \t");
+    if (value.len >= 2) {
+        const first = value[0];
+        const last = value[value.len - 1];
+        if ((first == '"' and last == '"') or (first == '\'' and last == '\'')) {
+            value = value[1 .. value.len - 1];
+        }
+    }
+
+    return .{
+        .env_name = env_name,
+        .value = value,
+    };
+}
+
+pub fn promptSecretValueAlloc(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    writer: anytype,
+    secret_name: []const u8,
+) ![]u8 {
+    try writer.print("Enter value for {s}: ", .{secret_name});
+    try writer.flush();
+
+    const stdin = std.Io.File.stdin();
+    const original_termios = try std.posix.tcgetattr(stdin.handle);
+    var hidden_termios = original_termios;
+    hidden_termios.lflag.ECHO = false;
+    try std.posix.tcsetattr(stdin.handle, .NOW, hidden_termios);
+    defer std.posix.tcsetattr(stdin.handle, .NOW, original_termios) catch {};
+
+    var input_buffer: [4096]u8 = undefined;
+    var stdin_reader = stdin.reader(io, &input_buffer);
+    const line = (try stdin_reader.interface.takeDelimiter('\n')) orelse return error.MissingValue;
+    try writer.print("\n", .{});
+    try writer.flush();
+
+    const trimmed = std.mem.trim(u8, line, "\r");
+    if (trimmed.len == 0) return error.MissingValue;
+    return allocator.dupe(u8, trimmed);
 }

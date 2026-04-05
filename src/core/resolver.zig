@@ -260,7 +260,7 @@ fn matchesPrefix(expected: [][]const u8, argv: []const []const u8) bool {
     return true;
 }
 
-fn canonicalizeEnvNameAlloc(allocator: std.mem.Allocator, env_name: []const u8) ![]u8 {
+pub fn canonicalizeEnvNameAlloc(allocator: std.mem.Allocator, env_name: []const u8) ![]u8 {
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(allocator);
 

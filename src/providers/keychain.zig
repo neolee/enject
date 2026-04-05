@@ -85,4 +85,18 @@ pub const Store = struct {
             },
         }
     }
+
+    pub fn listGenericPasswordAccountsAlloc(
+        self: Store,
+        allocator: std.mem.Allocator,
+        service: []const u8,
+    ) ![][]u8 {
+        return switch (self.backend) {
+            .security_cli => error.UnsupportedOperation,
+            .native => try keychain_native.listGenericPasswordAccountsAlloc(
+                allocator,
+                service,
+            ),
+        };
+    }
 };

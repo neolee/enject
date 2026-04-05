@@ -16,6 +16,10 @@ Current work is focused on:
 - macOS Keychain integration
 - trust rules for local project configuration
 
+Development note:
+
+- `ENJECT_KEYCHAIN_BACKEND=native|security_cli` can be used to force a specific Keychain backend while testing.
+
 ## Design Notes
 
 The current design draft lives in [INIT.md](./INIT.md).

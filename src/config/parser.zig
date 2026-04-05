@@ -27,10 +27,17 @@ pub fn parseSliceAlloc(allocator: std.mem.Allocator, input: []const u8) !model.C
 }
 
 const RawBinding = struct {
-    account: []const u8,
+    account: ?[]const u8 = null,
+    env: ?[]const u8 = null,
+};
+
+const RawGroup = struct {
+    global: ?[]const []const u8 = null,
+    project: ?[]const []const u8 = null,
 };
 
 const RawInjectSet = struct {
+    groups: ?[]const []const u8 = null,
     global: ?[]const []const u8 = null,
     project: ?[]const []const u8 = null,
 };
@@ -58,6 +65,7 @@ const RawConfig = struct {
     version: u32 = 1,
     project: ?RawProject = null,
     rules: ?RawRules = null,
+    groups: ?toml.HashMap(RawGroup) = null,
     bindings: ?toml.HashMap(RawBinding) = null,
 };
 
@@ -80,26 +88,51 @@ fn convertConfigAlloc(allocator: std.mem.Allocator, raw: RawConfig) !model.Confi
         }
     }
 
+    if (raw.groups) |raw_groups| {
+        var iter = raw_groups.map.iterator();
+        while (iter.next()) |entry| {
+            const key_copy = try allocator.dupe(u8, entry.key_ptr.*);
+            errdefer allocator.free(key_copy);
+
+            const group = try convertGroupAlloc(allocator, entry.value_ptr.*);
+            errdefer {
+                var owned = group;
+                owned.deinit(allocator);
+            }
+
+            const gop = try config.groups.getOrPut(allocator, key_copy);
+            if (gop.found_existing) return error.DuplicateGroup;
+            gop.value_ptr.* = group;
+        }
+    }
+
     if (raw.bindings) |bindings| {
         var iter = bindings.map.iterator();
         while (iter.next()) |entry| {
             const key_copy = try allocator.dupe(u8, entry.key_ptr.*);
             errdefer allocator.free(key_copy);
 
-            const account_copy = try allocator.dupe(u8, entry.value_ptr.account);
-            errdefer allocator.free(account_copy);
+            const binding = try convertBindingAlloc(allocator, entry.value_ptr.*);
+            errdefer {
+                var owned = binding;
+                owned.deinit(allocator);
+            }
 
             const gop = try config.bindings.getOrPut(allocator, key_copy);
             if (gop.found_existing) return error.DuplicateBinding;
-            gop.value_ptr.* = .{ .account = account_copy };
+            gop.value_ptr.* = binding;
         }
     }
 
     return config;
 }
 
-fn convertInjectSetAlloc(allocator: std.mem.Allocator, raw: RawInjectSet) !model.InjectSet {
+fn convertInjectSetAlloc(
+    allocator: std.mem.Allocator,
+    raw: RawInjectSet,
+) !model.InjectSet {
     return .{
+        .groups = try dupStringSliceAlloc(allocator, raw.groups orelse &.{}),
         .global = try dupStringSliceAlloc(allocator, raw.global orelse &.{}),
         .project = try dupStringSliceAlloc(allocator, raw.project orelse &.{}),
     };
@@ -132,6 +165,28 @@ fn convertCommandRulesAlloc(
     }
 
     return rules.toOwnedSlice(allocator);
+}
+
+fn convertBindingAlloc(allocator: std.mem.Allocator, raw: RawBinding) !model.Binding {
+    if (raw.account != null and raw.env != null) return error.InvalidBinding;
+    if (raw.account) |account| {
+        return .{
+            .source = .{ .account = try allocator.dupe(u8, account) },
+        };
+    }
+    if (raw.env) |env_name| {
+        return .{
+            .source = .{ .env = try allocator.dupe(u8, env_name) },
+        };
+    }
+    return error.InvalidBinding;
+}
+
+fn convertGroupAlloc(allocator: std.mem.Allocator, raw: RawGroup) !model.Group {
+    return .{
+        .global = try dupStringSliceAlloc(allocator, raw.global orelse &.{}),
+        .project = try dupStringSliceAlloc(allocator, raw.project orelse &.{}),
+    };
 }
 
 fn dupStringSliceAlloc(allocator: std.mem.Allocator, values: []const []const u8) ![][]const u8 {

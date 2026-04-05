@@ -404,9 +404,75 @@ test "cli runCommand skips missing secrets and still runs child process" {
     try std.testing.expectEqualDeep(std.process.Child.Term{ .exited = 0 }, run_result.term);
     try std.testing.expectEqual(@as(usize, 1), run_result.missing_secrets.len);
     try std.testing.expectEqualStrings("OPENAI_API_KEY", run_result.missing_secrets[0].env_name);
-    try std.testing.expectEqualStrings(support.test_service, run_result.missing_secrets[0].service);
-    try std.testing.expectEqualStrings("openai_api_key", run_result.missing_secrets[0].account);
-    try std.testing.expect(std.mem.indexOf(u8, warning_writer.written(), "warning: secret not found for OPENAI_API_KEY") != null);
+    try std.testing.expectEqualStrings("com.github.neolee.enject.tests/openai_api_key", run_result.missing_secrets[0].detail);
+    try std.testing.expect(std.mem.indexOf(u8, warning_writer.written(), "warning: value not available for OPENAI_API_KEY") != null);
+}
+
+test "cli runCommand supports env alias bindings" {
+    const allocator = std.testing.allocator;
+    var env_map = std.process.Environ.Map.init(allocator);
+    defer env_map.deinit();
+
+    var temp_dir = std.testing.tmpDir(.{});
+    defer temp_dir.cleanup();
+
+    const global_config_text =
+        \\version = 1
+        \\
+        \\[[rules.command]]
+        \\match.argv_prefix = ["/bin/sh", "-c"]
+        \\inject.global = ["OPENAI_API_KEY", "MY_TOOL_API_KEY"]
+        \\
+        \\[bindings]
+        \\MY_TOOL_API_KEY = { env = "OPENAI_API_KEY" }
+        \\
+    ;
+
+    try temp_dir.dir.writeFile(std.testing.io, .{
+        .sub_path = "config.toml",
+        .data = global_config_text,
+    });
+
+    const root_path = try support.tempRootPathAlloc(allocator, &temp_dir);
+    defer allocator.free(root_path);
+    const cwd_path = try allocator.dupe(u8, root_path);
+    defer allocator.free(cwd_path);
+    const global_config_path = try std.fs.path.join(allocator, &.{ root_path, "config.toml" });
+    defer allocator.free(global_config_path);
+    const trust_store_path = try std.fs.path.join(allocator, &.{ root_path, "trust.tsv" });
+    defer allocator.free(trust_store_path);
+
+    const store = support.keychain.Store.init(.native, std.testing.io);
+    const target = support.keychain.GenericPasswordTarget{
+        .service = support.test_service,
+        .account = "openai_api_key",
+    };
+    store.deleteGenericPassword(allocator, target) catch |err| switch (err) {
+        error.NotFound => {},
+        else => return err,
+    };
+    defer store.deleteGenericPassword(allocator, target) catch {};
+    try store.writeGenericPassword(allocator, target, "cli-injected-secret");
+
+    const runtime = cli.Runtime{
+        .io = std.testing.io,
+        .environ_map = &env_map,
+        .cwd_path = cwd_path,
+        .global_config_path = global_config_path,
+        .trust_store_path = trust_store_path,
+        .service = support.test_service,
+        .keychain_backend = .native,
+    };
+
+    var warning_writer: std.Io.Writer.Allocating = .init(allocator);
+    defer warning_writer.deinit();
+
+    var run_result = try cli.runCommand(allocator, runtime, &.{ "/bin/sh", "-c", "test \"$MY_TOOL_API_KEY\" = \"cli-injected-secret\"" }, &warning_writer.writer);
+    defer run_result.deinit(allocator);
+
+    try std.testing.expectEqualDeep(std.process.Child.Term{ .exited = 0 }, run_result.term);
+    try std.testing.expectEqual(@as(usize, 0), run_result.missing_secrets.len);
+    try std.testing.expectEqualStrings("", warning_writer.written());
 }
 
 test "cli secret put ls and rm manage keychain entries" {
@@ -519,4 +585,30 @@ test "cli importSecretsAlloc imports global and project scoped secrets" {
     });
     defer allocator.free(loaded);
     try std.testing.expectEqualStrings("postgres://acme:password@localhost/acme", loaded);
+}
+
+test "cli listSecretsAlloc reports unsupported operation for security_cli backend" {
+    const allocator = std.testing.allocator;
+    var env_map = std.process.Environ.Map.init(allocator);
+    defer env_map.deinit();
+
+    var temp_dir = std.testing.tmpDir(.{});
+    defer temp_dir.cleanup();
+
+    const root_path = try support.tempRootPathAlloc(allocator, &temp_dir);
+    defer allocator.free(root_path);
+    const trust_store_path = try std.fs.path.join(allocator, &.{ root_path, "trust.tsv" });
+    defer allocator.free(trust_store_path);
+
+    const runtime = cli.Runtime{
+        .io = std.testing.io,
+        .environ_map = &env_map,
+        .cwd_path = root_path,
+        .global_config_path = null,
+        .trust_store_path = trust_store_path,
+        .service = "com.github.neolee.enject.tests.cli",
+        .keychain_backend = .security_cli,
+    };
+
+    try std.testing.expectError(error.UnsupportedOperation, cli.listSecretsAlloc(allocator, runtime));
 }

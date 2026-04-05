@@ -88,13 +88,11 @@ pub const DoctorData = struct {
 
 pub const MissingSecret = struct {
     env_name: []const u8,
-    service: []const u8,
-    account: []const u8,
+    detail: []const u8,
 
     pub fn deinit(self: *MissingSecret, allocator: std.mem.Allocator) void {
         allocator.free(self.env_name);
-        allocator.free(self.service);
-        allocator.free(self.account);
+        allocator.free(self.detail);
         self.* = undefined;
     }
 };
@@ -237,24 +235,13 @@ pub fn doctorAlloc(
 
     var resolution = try resolver.resolveAlloc(allocator, &context, command_argv, runtime.service);
     errdefer resolution.deinit(allocator);
-
-    const store = keychain.Store.init(runtime.keychain_backend, runtime.io);
     const binding_statuses = try allocator.alloc(DoctorBindingStatus, resolution.bindings.len);
     errdefer allocator.free(binding_statuses);
+    const resolved_values = try resolveBindingValuesAlloc(allocator, runtime, &resolution);
+    defer deinitResolvedValues(allocator, resolved_values);
 
-    for (resolution.bindings, 0..) |binding, index| {
-        const value = store.readGenericPasswordAlloc(allocator, .{
-            .service = binding.service,
-            .account = binding.account,
-        }) catch |err| switch (err) {
-            error.NotFound => {
-                binding_statuses[index] = .missing;
-                continue;
-            },
-            else => return err,
-        };
-        defer allocator.free(value);
-        binding_statuses[index] = .present;
+    for (resolved_values, 0..) |maybe_value, index| {
+        binding_statuses[index] = if (maybe_value != null) .present else .missing;
     }
 
     return .{
@@ -375,31 +362,26 @@ pub fn runCommand(
         missing_secrets.deinit(allocator);
     }
 
-    const store = keychain.Store.init(runtime.keychain_backend, runtime.io);
-    for (explain_data.resolution.bindings) |binding| {
-        const value = store.readGenericPasswordAlloc(allocator, .{
-            .service = binding.service,
-            .account = binding.account,
-        }) catch |err| switch (err) {
-            error.NotFound => {
-                try missing_secrets.append(allocator, .{
-                    .env_name = try allocator.dupe(u8, binding.env_name),
-                    .service = try allocator.dupe(u8, binding.service),
-                    .account = try allocator.dupe(u8, binding.account),
-                });
-                continue;
-            },
-            else => return err,
-        };
-        defer allocator.free(value);
-        try environ_map.put(binding.env_name, value);
+    const resolved_values = try resolveBindingValuesAlloc(allocator, runtime, &explain_data.resolution);
+    defer deinitResolvedValues(allocator, resolved_values);
+
+    for (explain_data.resolution.bindings, resolved_values) |binding, maybe_value| {
+        if (maybe_value) |value| {
+            try environ_map.put(binding.env_name, value);
+            continue;
+        }
+        var detail_buffer: [512]u8 = undefined;
+        try missing_secrets.append(allocator, .{
+            .env_name = try allocator.dupe(u8, binding.env_name),
+            .detail = try allocator.dupe(u8, try resolver.valueSourceDescription(&detail_buffer, &binding)),
+        });
     }
 
     if (missing_secrets.items.len > 0) {
         for (missing_secrets.items) |missing_secret| {
             try warning_writer.print(
-                "warning: secret not found for {s} ({s}/{s}); skipping injection\n",
-                .{ missing_secret.env_name, missing_secret.service, missing_secret.account },
+                "warning: value not available for {s} ({s}); skipping injection\n",
+                .{ missing_secret.env_name, missing_secret.detail },
             );
         }
         try warning_writer.flush();
@@ -460,9 +442,10 @@ pub fn renderExplain(writer: anytype, data: *const ExplainData) !void {
     }
 
     for (data.resolution.bindings) |binding| {
+        var detail_buffer: [512]u8 = undefined;
         try writer.print(
-            "  {s} -> {s}/{s} ({s})\n",
-            .{ binding.env_name, binding.service, binding.account, @tagName(binding.lookup) },
+            "  {s} -> {s} ({s}, {s})\n",
+            .{ binding.env_name, try resolver.valueSourceDescription(&detail_buffer, &binding), resolver.sourceName(binding.source), resolver.lookupName(&binding) },
         );
     }
 }
@@ -508,9 +491,10 @@ pub fn renderDoctor(writer: anytype, data: *const DoctorData) !void {
     }
 
     for (data.resolution.bindings, data.binding_statuses) |binding, status| {
+        var detail_buffer: [512]u8 = undefined;
         try writer.print(
-            "  {s} -> {s}/{s} ({s}, {s})\n",
-            .{ binding.env_name, binding.service, binding.account, @tagName(binding.lookup), @tagName(status) },
+            "  {s} -> {s} ({s}, {s}, {s})\n",
+            .{ binding.env_name, try resolver.valueSourceDescription(&detail_buffer, &binding), resolver.sourceName(binding.source), resolver.lookupName(&binding), @tagName(status) },
         );
     }
 }
@@ -651,6 +635,110 @@ fn backendName(backend: keychain.Backend) []const u8 {
         .native => "native",
         .security_cli => "security_cli",
     };
+}
+
+const ResolveState = enum {
+    unresolved,
+    resolving,
+    resolved,
+    missing,
+};
+
+fn resolveBindingValuesAlloc(
+    allocator: std.mem.Allocator,
+    runtime: Runtime,
+    resolution: *const resolver.Resolution,
+) ![]?[]u8 {
+    const values = try allocator.alloc(?[]u8, resolution.bindings.len);
+    errdefer allocator.free(values);
+    const states = try allocator.alloc(ResolveState, resolution.bindings.len);
+    defer allocator.free(states);
+
+    for (values) |*slot| slot.* = null;
+    for (states) |*state| state.* = .unresolved;
+
+    for (resolution.bindings, 0..) |_, index| {
+        _ = try resolveBindingValueAtIndexAlloc(allocator, runtime, resolution, values, states, index);
+    }
+
+    return values;
+}
+
+fn deinitResolvedValues(allocator: std.mem.Allocator, values: []?[]u8) void {
+    for (values) |maybe_value| {
+        if (maybe_value) |value| allocator.free(value);
+    }
+    allocator.free(values);
+}
+
+fn resolveBindingValueAtIndexAlloc(
+    allocator: std.mem.Allocator,
+    runtime: Runtime,
+    resolution: *const resolver.Resolution,
+    values: []?[]u8,
+    states: []ResolveState,
+    index: usize,
+) anyerror!?[]u8 {
+    return switch (states[index]) {
+        .resolved => values[index].?,
+        .missing => null,
+        .resolving => error.BindingCycle,
+        .unresolved => blk: {
+            states[index] = .resolving;
+            const binding = resolution.bindings[index];
+            const value = switch (binding.value_source) {
+                .secret => |secret| resolveSecretValueAlloc(allocator, runtime, secret) catch |err| switch (err) {
+                    error.NotFound => null,
+                    else => return err,
+                },
+                .env => |target_env_name| try resolveEnvAliasValueAlloc(allocator, runtime, resolution, values, states, target_env_name),
+            };
+
+            if (value) |resolved_value| {
+                values[index] = resolved_value;
+                states[index] = .resolved;
+                break :blk resolved_value;
+            }
+
+            states[index] = .missing;
+            break :blk null;
+        },
+    };
+}
+
+fn resolveSecretValueAlloc(
+    allocator: std.mem.Allocator,
+    runtime: Runtime,
+    secret: resolver.ResolvedBinding.SecretRef,
+) anyerror![]u8 {
+    const store = keychain.Store.init(runtime.keychain_backend, runtime.io);
+    return store.readGenericPasswordAlloc(allocator, .{
+        .service = secret.service,
+        .account = secret.account,
+    });
+}
+
+fn resolveEnvAliasValueAlloc(
+    allocator: std.mem.Allocator,
+    runtime: Runtime,
+    resolution: *const resolver.Resolution,
+    values: []?[]u8,
+    states: []ResolveState,
+    target_env_name: []const u8,
+) anyerror!?[]u8 {
+    for (resolution.bindings, 0..) |binding, index| {
+        if (!std.mem.eql(u8, binding.env_name, target_env_name)) continue;
+        if (try resolveBindingValueAtIndexAlloc(allocator, runtime, resolution, values, states, index)) |resolved_value| {
+            return try allocator.dupe(u8, resolved_value);
+        }
+        break;
+    }
+
+    if (runtime.environ_map.get(target_env_name)) |inherited_value| {
+        return try allocator.dupe(u8, inherited_value);
+    }
+
+    return null;
 }
 
 fn secretAccountFromNameAlloc(allocator: std.mem.Allocator, name: []const u8) ![]u8 {

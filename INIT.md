@@ -87,6 +87,21 @@ Recommended precedence from highest to lowest:
 
 If two sources bind the same environment variable differently, the default behavior should be to fail with a clear conflict error.
 
+The effective configuration model should be layered:
+
+1. built-in `catalog.toml` is the base layer
+2. global config overrides built-in named definitions
+3. project config overrides the combined built-in and global result
+
+Different sections should merge differently:
+
+- `groups`: name-based map, with same-name entries overriding lower layers rather than merging
+- `bindings`: name-based map, with same-name entries overriding lower layers rather than merging
+- `rules.directory`: additive across layers
+- `rules.command`: additive across layers
+
+This means `inject.groups = ["llm"]` should be resolved against the effective merged group namespace, not only against groups defined in the same file. A built-in rule may therefore use a group that is later overridden by global or project config.
+
 ### Naming Convention
 
 The default Keychain namespace should be:
@@ -181,9 +196,17 @@ Example:
 ```toml
 [bindings]
 DATABASE_URL = { account = "staging/database_url" }
+MY_TOOL_API_KEY = { env = "OPENAI_API_KEY" }
 ```
 
-This overrides the default account lookup for `DATABASE_URL` while keeping the rest of the config declarative and concise.
+This overrides the default account lookup for `DATABASE_URL`, and also allows one injected environment variable to mirror another via `env = "OPENAI_API_KEY"`, while keeping the rest of the config declarative and concise.
+
+`env = "OTHER_ENV"` should resolve in this order:
+
+1. a value that `enject` is injecting for `OTHER_ENV` in the current command context
+2. an inherited value already present in the parent process environment
+
+If neither is available, the dependent variable should simply remain unset unless a stricter mode is added later.
 
 ### How Rules Work
 
@@ -245,9 +268,13 @@ The product should ship with useful built-in defaults so common tools work with 
 Examples:
 
 - `codex` implies `OPENAI_API_KEY`
-- future integrations may imply `ANTHROPIC_API_KEY`, `GITHUB_TOKEN`, `AWS_PROFILE`, or similar
+- `claude` implies `ANTHROPIC_API_KEY`
+- `opencode` may imply a reusable group of common LLM provider keys
+- `crush` may imply a reusable group of common LLM provider keys
+- future integrations may imply `GITHUB_TOKEN`, `AWS_PROFILE`, or similar
 
 Built-in defaults should remain overrideable by user config.
+The built-in command catalog should live as a repository TOML file rather than as hard-coded Zig tables, so it can evolve independently and support reusable env groups.
 
 ## Trust Model for Local Configuration
 

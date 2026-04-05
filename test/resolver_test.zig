@@ -165,11 +165,8 @@ test "resolver reports conflicting bindings for the same env" {
         \\version = 1
         \\
         \\[[rules.command]]
-        \\match.argv = ["codex"]
+        \\match.argv = ["tool"]
         \\inject.global = ["OPENAI_API_KEY"]
-        \\
-        \\[bindings]
-        \\OPENAI_API_KEY = { account = "global/openai_api_key" }
         \\
     ;
     const project_config_text =
@@ -179,10 +176,7 @@ test "resolver reports conflicting bindings for the same env" {
         \\name = "acme"
         \\
         \\[rules.directory]
-        \\global = ["OPENAI_API_KEY"]
-        \\
-        \\[bindings]
-        \\OPENAI_API_KEY = { account = "project/openai_api_key" }
+        \\project = ["OPENAI_API_KEY"]
         \\
     ;
 
@@ -222,7 +216,7 @@ test "resolver reports conflicting bindings for the same env" {
 
     try std.testing.expectError(
         error.BindingConflict,
-        support.resolver.resolveAlloc(allocator, &context, &.{ "codex" }, support.resolver.default_service),
+        support.resolver.resolveAlloc(allocator, &context, &.{ "tool" }, support.resolver.default_service),
     );
 }
 
@@ -269,4 +263,109 @@ test "resolver matches argv_prefix against longer commands" {
 
     try std.testing.expectEqual(@as(usize, 1), resolution.bindings.len);
     try support.expectAccount(resolution.bindings, "OPENAI_API_KEY", "openai_api_key");
+}
+
+test "resolver applies built-in command catalog defaults" {
+    const allocator = std.testing.allocator;
+
+    var context = support.resolver.LoadedContext{
+        .built_in_config = try enject.core.catalog.loadAlloc(allocator),
+    };
+    defer context.deinit(allocator);
+
+    var resolution = try support.resolver.resolveAlloc(allocator, &context, &.{"codex"}, support.resolver.default_service);
+    defer resolution.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), resolution.bindings.len);
+    try support.expectAccount(resolution.bindings, "OPENAI_API_KEY", "openai_api_key");
+    try std.testing.expectEqualStrings("built-in", support.resolver.sourceName(resolution.bindings[0].source));
+}
+
+test "resolver applies built-in claude default" {
+    const allocator = std.testing.allocator;
+
+    var context = support.resolver.LoadedContext{
+        .built_in_config = try enject.core.catalog.loadAlloc(allocator),
+    };
+    defer context.deinit(allocator);
+
+    var resolution = try support.resolver.resolveAlloc(allocator, &context, &.{"claude"}, support.resolver.default_service);
+    defer resolution.deinit(allocator);
+
+    try support.expectAccount(resolution.bindings, "ANTHROPIC_API_KEY", "anthropic_api_key");
+}
+
+test "resolver lets user config override built-in defaults" {
+    const allocator = std.testing.allocator;
+    const global_config = try parser.parseSliceAlloc(allocator,
+        \\version = 1
+        \\
+        \\[bindings]
+        \\OPENAI_API_KEY = { account = "custom/openai_api_key" }
+        \\
+    );
+
+    var context = support.resolver.LoadedContext{
+        .built_in_config = try enject.core.catalog.loadAlloc(allocator),
+        .global_config = global_config,
+    };
+    defer context.deinit(allocator);
+
+    var resolution = try support.resolver.resolveAlloc(allocator, &context, &.{"codex"}, support.resolver.default_service);
+    defer resolution.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), resolution.bindings.len);
+    try support.expectAccount(resolution.bindings, "OPENAI_API_KEY", "custom/openai_api_key");
+    try std.testing.expectEqualStrings("global config", support.resolver.sourceName(resolution.bindings[0].source));
+}
+
+test "resolver supports env alias bindings" {
+    const allocator = std.testing.allocator;
+    const global_config = try parser.parseSliceAlloc(allocator,
+        \\version = 1
+        \\
+        \\[[rules.command]]
+        \\match.argv_prefix = ["tool"]
+        \\inject.global = ["OPENAI_API_KEY", "MY_TOOL_API_KEY"]
+        \\
+        \\[bindings]
+        \\MY_TOOL_API_KEY = { env = "OPENAI_API_KEY" }
+        \\
+    );
+
+    var context = support.resolver.LoadedContext{
+        .built_in_config = try enject.core.catalog.loadAlloc(allocator),
+        .global_config = global_config,
+    };
+    defer context.deinit(allocator);
+
+    var resolution = try support.resolver.resolveAlloc(allocator, &context, &.{"tool"}, support.resolver.default_service);
+    defer resolution.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 2), resolution.bindings.len);
+    try support.expectAccount(resolution.bindings, "OPENAI_API_KEY", "openai_api_key");
+    try support.expectEnvAlias(resolution.bindings, "MY_TOOL_API_KEY", "OPENAI_API_KEY");
+}
+
+test "resolver lets global config reuse built-in groups" {
+    const allocator = std.testing.allocator;
+    const global_config = try parser.parseSliceAlloc(allocator,
+        \\version = 1
+        \\
+        \\[[rules.command]]
+        \\match.argv_prefix = ["claude"]
+        \\inject.groups = ["llm"]
+        \\
+    );
+
+    var context = support.resolver.LoadedContext{
+        .built_in_config = try enject.core.catalog.loadAlloc(allocator),
+        .global_config = global_config,
+    };
+    defer context.deinit(allocator);
+
+    var resolution = try support.resolver.resolveAlloc(allocator, &context, &.{"claude"}, support.resolver.default_service);
+    defer resolution.deinit(allocator);
+
+    try support.expectAccount(resolution.bindings, "ANTHROPIC_API_KEY", "anthropic_api_key");
 }

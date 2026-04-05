@@ -1,0 +1,42 @@
+version = 1
+
+[groups.llm]
+global = [
+  "OPENAI_API_KEY",
+  "ANTHROPIC_API_KEY",
+  "GOOGLE_API_KEY",
+  "GEMINI_API_KEY",
+  "XAI_API_KEY",
+  "GROQ_API_KEY",
+  "MISTRAL_API_KEY",
+  "OPENROUTER_API_KEY",
+  "DEEPSEEK_API_KEY",
+  "ALIYUN_API_KEY",
+  "MOONSHOT_API_KEY",
+  "KIMICODE_API_KEY",
+  "ZHIPU_API_KEY",
+]
+
+[[rules.command]]
+match.argv_prefix = ["codex"]
+inject.global = ["OPENAI_API_KEY"]
+
+[[rules.command]]
+match.argv_prefix = ["claude"]
+inject.global = ["ANTHROPIC_API_KEY"]
+
+[[rules.command]]
+match.argv_prefix = ["opencode"]
+inject.groups = ["llm"]
+
+[[rules.command]]
+match.argv_prefix = ["crush"]
+inject.groups = ["llm"]
+
+[[rules.command]]
+match.argv_prefix = ["aider"]
+inject.groups = ["llm"]
+
+[[rules.command]]
+match.argv_prefix = ["goose"]
+inject.groups = ["llm"]

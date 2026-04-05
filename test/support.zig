@@ -46,7 +46,27 @@ pub fn expectAccount(
 ) !void {
     for (bindings) |binding| {
         if (std.mem.eql(u8, binding.env_name, env_name)) {
-            try std.testing.expectEqualStrings(account, binding.account);
+            switch (binding.value_source) {
+                .secret => |secret| try std.testing.expectEqualStrings(account, secret.account),
+                .env => return error.ExpectedSecretBinding,
+            }
+            return;
+        }
+    }
+    return error.MissingExpectedBinding;
+}
+
+pub fn expectEnvAlias(
+    bindings: []const resolver.ResolvedBinding,
+    env_name: []const u8,
+    target_env_name: []const u8,
+) !void {
+    for (bindings) |binding| {
+        if (std.mem.eql(u8, binding.env_name, env_name)) {
+            switch (binding.value_source) {
+                .secret => return error.ExpectedEnvAliasBinding,
+                .env => |target| try std.testing.expectEqualStrings(target_env_name, target),
+            }
             return;
         }
     }

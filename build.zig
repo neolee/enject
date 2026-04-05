@@ -57,6 +57,7 @@ pub fn build(b: *std.Build) void {
     addNamedTestStep(b, target, optimize, enject_mod, "test-trust", "Run trust tests", "all-tests-trust", "test/trust_test.zig");
     addNamedTestStep(b, target, optimize, enject_mod, "test-config", "Run config tests", "all-tests-config", "test/config_test.zig");
     addNamedTestStep(b, target, optimize, enject_mod, "test-resolver", "Run resolver tests", "all-tests-resolver", "test/resolver_test.zig");
+    addNamedTestStep(b, target, optimize, enject_mod, "test-cli", "Run CLI tests", "all-tests-cli", "test/cli_test.zig");
 }
 
 fn linkAppleFrameworks(module: *std.Build.Module) void {

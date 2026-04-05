@@ -63,7 +63,10 @@ pub fn loadContextAlloc(
     errdefer result.deinit(allocator);
 
     if (options.global_config_path) |global_config_path| {
-        result.global_config = try config.parser.parseFileAlloc(allocator, io, global_config_path);
+        result.global_config = config.parser.parseFileAlloc(allocator, io, global_config_path) catch |err| switch (err) {
+            error.FileNotFound => null,
+            else => return err,
+        };
     }
 
     const trust_store = trust.store.Store.init(options.trust_store_path, io);

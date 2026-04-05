@@ -18,6 +18,8 @@ pub const Runtime = struct {
 pub const ParsedCommand = union(enum) {
     help,
     catalog_show,
+    shell_init: ShellInitCommand,
+    export_shell: ExportShellCommand,
     trust,
     explain: ExplainCommand,
     run: RunCommand,
@@ -28,6 +30,24 @@ pub const ParsedCommand = union(enum) {
 pub const ExplainCommand = struct {
     command_argv: []const []const u8,
     check: bool = false,
+};
+
+pub const ShellKind = enum {
+    zsh,
+};
+
+pub const ShellPhase = enum {
+    preexec,
+};
+
+pub const ShellInitCommand = struct {
+    shell: ShellKind,
+};
+
+pub const ExportShellCommand = struct {
+    shell: ShellKind,
+    phase: ShellPhase,
+    command_argv: []const []const u8,
 };
 
 pub const RunCommand = struct {
@@ -118,7 +138,9 @@ pub const RunResult = struct {
 };
 
 pub fn defaultRuntimeAlloc(allocator: std.mem.Allocator, init: std.process.Init) !Runtime {
-    const cwd_path = try std.process.currentPathAlloc(init.io, allocator);
+    const cwd_path_z = try std.process.currentPathAlloc(init.io, allocator);
+    defer allocator.free(cwd_path_z);
+    const cwd_path = try allocator.dupe(u8, cwd_path_z);
     errdefer allocator.free(cwd_path);
 
     const config_dir = try defaultConfigDirAlloc(allocator, init.environ_map);
@@ -179,6 +201,14 @@ pub fn parseCommand(args: []const []const u8) !ParsedCommand {
         if (args.len != index + 2) return error.UnexpectedArgument;
         if (!std.mem.eql(u8, args[index + 1], "show")) return error.UnknownSubcommand;
         return .catalog_show;
+    }
+    if (std.mem.eql(u8, verb, "shell")) {
+        if (verbose) return error.UnexpectedArgument;
+        return .{ .shell_init = try parseShellInitCommand(args[index + 1 ..]) };
+    }
+    if (std.mem.eql(u8, verb, "export")) {
+        if (verbose) return error.UnexpectedArgument;
+        return .{ .export_shell = try parseExportShellCommand(args[index + 1 ..]) };
     }
     if (std.mem.eql(u8, verb, "explain")) {
         if (verbose) return error.UnexpectedArgument;
@@ -541,6 +571,8 @@ pub fn printUsage(writer: anytype, program_name: []const u8) !void {
     try writer.print(
         \\Usage:
         \\  {s} catalog show
+        \\  {s} shell init zsh
+        \\  {s} export --shell zsh --phase preexec -- <command> [args...]
         \\  {s} trust
         \\  {s} secret put <name> [--value <value>]
         \\  {s} secret ls
@@ -550,12 +582,141 @@ pub fn printUsage(writer: anytype, program_name: []const u8) !void {
         \\  {s} [--verbose] run [--verbose] -- <command> [args...]
         \\  {s} [--verbose] <command> [args...]
         \\
-    , .{ program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name });
+    , .{ program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name });
 }
 
 pub fn renderCatalog(writer: anytype) !void {
     try writer.writeAll(catalog.text());
     if (catalog.text().len == 0 or catalog.text()[catalog.text().len - 1] != '\n') {
+        try writer.writeByte('\n');
+    }
+}
+
+pub fn renderShellInit(writer: anytype, program_path: []const u8) !void {
+    try writer.writeAll(
+        \\typeset -g ENJECT_RESTORE_ACTIVE=0
+        \\typeset -ga ENJECT_RESTORE_VARS=()
+        \\typeset -gA ENJECT_OLD_VALUES
+        \\typeset -gA ENJECT_OLD_PRESENT
+        \\
+        \\_enject_restore() {
+        \\  (( ENJECT_RESTORE_ACTIVE )) || return
+        \\
+        \\  local var_name
+        \\  for var_name in "${ENJECT_RESTORE_VARS[@]}"; do
+        \\    if [[ -n ${ENJECT_OLD_PRESENT[$var_name]-} ]]; then
+        \\      export "$var_name=${ENJECT_OLD_VALUES[$var_name]}"
+        \\    else
+        \\      unset "$var_name"
+        \\    fi
+        \\  done
+        \\
+        \\  ENJECT_RESTORE_ACTIVE=0
+        \\  ENJECT_RESTORE_VARS=()
+        \\  unset ENJECT_OLD_VALUES
+        \\  unset ENJECT_OLD_PRESENT
+        \\  typeset -gA ENJECT_OLD_VALUES
+        \\  typeset -gA ENJECT_OLD_PRESENT
+        \\}
+        \\
+        \\if (( $+functions[preexec] )) && [[ "${functions[preexec]}" != *"_enject_preexec_dispatch"* ]]; then
+        \\  functions -c preexec _enject_previous_preexec
+        \\fi
+        \\if (( $+functions[precmd] )) && [[ "${functions[precmd]}" != *"_enject_precmd_dispatch"* ]]; then
+        \\  functions -c precmd _enject_previous_precmd
+        \\fi
+        \\
+        \\_enject_preexec_dispatch() {
+        \\  local raw_command
+        \\  local export_file
+        \\  local export_script
+        \\  local line
+        \\  local var_name
+        \\  local -a export_vars
+        \\  raw_command=$1
+        \\
+        \\  [[ -z "$raw_command" ]] && return
+        \\  case "$raw_command" in
+        \\    *'|'*|*'&&'*|*'||'*|*';'*|*'('*|*')'*|*'{'*|*'}'*)
+        \\      return
+        \\      ;;
+        \\  esac
+        \\
+        \\  export_file=$(command mktemp /tmp/enject-preexec.XXXXXX) || return
+        \\  if command 
+    );
+    try writeZshSingleQuoted(writer, program_path);
+    try writer.writeAll(
+        \\ export --shell zsh --phase preexec -- "${(@z)raw_command}" >| "$export_file"; then
+        \\    export_script=$(<"$export_file")
+        \\    if [[ -n "$export_script" ]]; then
+        \\      export_vars=()
+        \\      for line in ${(f)export_script}; do
+        \\        [[ "$line" == export\ *=* ]] || continue
+        \\        var_name="${line#export }"
+        \\        var_name="${var_name%%=*}"
+        \\        [[ -n "$var_name" ]] || continue
+        \\        export_vars+=("$var_name")
+        \\      done
+        \\
+        \\      _enject_restore
+        \\      for var_name in "${export_vars[@]}"; do
+        \\        if (( ${+parameters[$var_name]} )); then
+        \\          ENJECT_OLD_PRESENT[$var_name]=1
+        \\          ENJECT_OLD_VALUES[$var_name]="${(P)var_name}"
+        \\        fi
+        \\      done
+        \\      ENJECT_RESTORE_VARS=("${export_vars[@]}")
+        \\      ENJECT_RESTORE_ACTIVE=1
+        \\      eval "$export_script"
+        \\    fi
+        \\  else
+        \\    print -u2 -- "enject: shell export failed for: $1"
+        \\  fi
+        \\  command rm -f -- "$export_file"
+        \\}
+        \\
+        \\_enject_precmd_dispatch() {
+        \\  _enject_restore
+        \\}
+        \\
+        \\preexec() {
+        \\  local raw_command
+        \\  raw_command=$1
+        \\  if (( $+functions[_enject_previous_preexec] )); then
+        \\    _enject_previous_preexec "$@"
+        \\  fi
+        \\  _enject_preexec_dispatch "$raw_command"
+        \\}
+        \\
+        \\precmd() {
+        \\  _enject_precmd_dispatch "$@"
+        \\  if (( $+functions[_enject_previous_precmd] )); then
+        \\    _enject_previous_precmd "$@"
+        \\  fi
+        \\}
+        \\
+    );
+}
+
+pub fn renderExportShellPreexec(
+    allocator: std.mem.Allocator,
+    writer: anytype,
+    runtime: Runtime,
+    command_argv: []const []const u8,
+) !void {
+    if (command_argv.len == 0) return error.MissingCommand;
+
+    var explain_data = try explainAlloc(allocator, runtime, command_argv);
+    defer explain_data.deinit(allocator);
+
+    const resolved_values = try resolveBindingValuesAlloc(allocator, runtime, &explain_data.resolution);
+    defer deinitResolvedValues(allocator, resolved_values);
+
+    for (explain_data.resolution.bindings, resolved_values) |binding, maybe_value| {
+        const value = maybe_value orelse continue;
+        try writer.print("export {s}=", .{binding.env_name});
+        try writeZshSingleQuoted(writer, value);
         try writer.writeByte('\n');
     }
 }
@@ -587,6 +748,27 @@ fn parseExplainCommand(args: []const []const u8, default_check: bool) !ExplainCo
     };
 }
 
+fn parseShellInitCommand(args: []const []const u8) !ShellInitCommand {
+    if (args.len != 2) return error.UnexpectedArgument;
+    if (!std.mem.eql(u8, args[0], "init")) return error.UnknownSubcommand;
+    return .{
+        .shell = parseShellKind(args[1]) orelse return error.UnknownSubcommand,
+    };
+}
+
+fn parseExportShellCommand(args: []const []const u8) !ExportShellCommand {
+    if (args.len < 4) return error.UnexpectedArgument;
+    if (!std.mem.eql(u8, args[0], "--shell")) return error.UnexpectedArgument;
+    const shell = parseShellKind(args[1]) orelse return error.UnknownSubcommand;
+    if (!std.mem.eql(u8, args[2], "--phase")) return error.UnexpectedArgument;
+    const phase = parseShellPhase(args[3]) orelse return error.UnknownSubcommand;
+    return .{
+        .shell = shell,
+        .phase = phase,
+        .command_argv = trimCommandSeparator(args[4..]),
+    };
+}
+
 fn parseRunCommand(args: []const []const u8, initial_verbose: bool) !RunCommand {
     var verbose = initial_verbose;
     var index: usize = 0;
@@ -603,6 +785,16 @@ fn parseRunCommand(args: []const []const u8, initial_verbose: bool) !RunCommand 
         .command_argv = trimCommandSeparator(args[index..]),
         .verbose = verbose,
     };
+}
+
+fn parseShellKind(arg: []const u8) ?ShellKind {
+    if (std.mem.eql(u8, arg, "zsh")) return .zsh;
+    return null;
+}
+
+fn parseShellPhase(arg: []const u8) ?ShellPhase {
+    if (std.mem.eql(u8, arg, "preexec")) return .preexec;
+    return null;
 }
 
 fn parseSecretCommand(args: []const []const u8) !SecretCommand {
@@ -856,6 +1048,18 @@ fn parseEnvAssignment(line: []const u8) ?ParsedEnvAssignment {
         .env_name = env_name,
         .value = value,
     };
+}
+
+fn writeZshSingleQuoted(writer: anytype, value: []const u8) !void {
+    try writer.writeByte('\'');
+    for (value) |char| {
+        if (char == '\'') {
+            try writer.writeAll("'\"'\"'");
+            continue;
+        }
+        try writer.writeByte(char);
+    }
+    try writer.writeByte('\'');
 }
 
 pub fn promptSecretValueAlloc(

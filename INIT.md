@@ -12,6 +12,27 @@ The primary use case is API key management during local development:
 
 The intended long-term implementation language is Zig. A shell prototype is acceptable only when it helps validate CLI behavior quickly, but the target architecture should be designed for Zig from the start.
 
+## Current Implementation Status
+
+At the current repository state:
+
+- Milestone 1 is complete
+- Milestone 2 is complete
+- Milestone 3 is partially complete
+
+Implemented so far includes:
+
+- core config parsing and resolution
+- trust checking for local `.enject`
+- native and `security`-CLI Keychain backends
+- `run`, `explain`, `explain --check`, `catalog show`, `import`, and `secret` commands
+- built-in command catalog support
+- `zsh` shell integration via `shell init zsh`
+
+Still pending from the current Milestone 3 direction:
+
+- shell completion
+
 ## Core Product Position
 
 `enject` is not a shell state mutator. Its default behavior should be:
@@ -24,8 +45,8 @@ That means `enject codex` should behave like "run `codex` with the right environ
 
 This distinction matters because a normal CLI cannot reliably mutate the parent shell process. If shell integration is needed, it should be an explicit secondary mode such as:
 
-- `enject export --shell zsh`
-- `eval "$(enject export --shell zsh)"`
+- `enject shell init zsh`
+- `eval "$(enject shell init zsh)"`
 
 The default path should remain process-local injection.
 
@@ -308,6 +329,8 @@ This section describes the intended command surface of the product. Not every co
 Recommended commands:
 
 - `enject catalog show`
+- `enject shell init zsh`
+- `enject export --shell zsh --phase preexec -- <command> [args...]`
 - `enject run -- <command> [args...]`
 - `enject <command> [args...]` as shorthand for `run`
 - `enject explain [--] <command> [args...]`
@@ -318,24 +341,37 @@ Recommended commands:
 - `enject secret ls`
 - `enject trust`
 
-### Shell Export Mode
+### Shell Integration
 
-If shell export mode is added later, it should be an explicit shell-integration surface for environments that are not launched through `enject run`.
+The current shell integration path should be command-scoped and `zsh`-specific:
 
-If implemented, its behavior should be:
+- `enject shell init zsh`
 
-- resolve `rules.directory` from the current working directory
-- output shell code that exports the resulting directory-scoped environment variables
-- optionally output corresponding `unset` commands for variables that are no longer active
+This command should emit a small `zsh` script that installs:
 
-It should not require a target command and should not resolve `rules.command`, because command-scoped activation belongs to command execution time or future `preexec` integration.
+- a `preexec` hook that resolves the current command through `enject export --shell zsh --phase preexec -- ...`
+- a `precmd` hook that restores any variables temporarily injected for the just-finished command
 
-In other words:
+The internal helper surface is:
 
-- `enject run` and `enject explain` resolve both directory-scoped and command-scoped rules
-- a future `enject export --shell zsh` would resolve directory-scoped rules only
+- `enject export --shell zsh --phase preexec -- <command> [args...]`
+
+Its current semantics should be:
+
+- resolve the current command exactly as `enject run` would
+- emit only `export ...` lines for values that are actually available
+- print no secret values except in shell-escaped export form intended for immediate `eval`
+
+The recommended public entry point remains `shell init zsh`, not direct use of `export --shell`.
 
 Built-in `chpwd` integration should not be a first-version priority. It keeps values resident in the interactive shell environment for longer, broadens the inheritance surface to unrelated child processes, and is therefore less desirable than command-scoped `preexec` integration.
+
+The current `preexec` integration should deliberately skip obviously complex shell command lines such as:
+
+- pipelines
+- `&&` / `||`
+- `;`
+- subshell-like groupings using parentheses or braces
 
 ### Explain Mode
 
@@ -543,8 +579,8 @@ These milestones describe an implementation sequence, not a restriction on the f
 
 - Add `explain --check`
 - Add a small built-in command catalog
-- Add shell integration, prioritizing `preexec` over `chpwd`
-- Consider `export --shell zsh` only as an explicit advanced mode
+- Add `zsh` shell integration with `preexec` and `precmd`
+- Keep `export --shell zsh --phase preexec -- ...` as the explicit shell helper used by `shell init zsh`
 - Add completion
 
 ## Possible Future Enhancements

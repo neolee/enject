@@ -4,6 +4,7 @@ const cli = @import("enject").cli;
 pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
     const args = try init.minimal.args.toSlice(allocator);
+    defer allocator.free(args);
 
     var stdout_buffer: [4096]u8 = undefined;
     var stdout_writer = std.Io.File.stdout().writer(init.io, &stdout_buffer);
@@ -33,6 +34,22 @@ pub fn main(init: std.process.Init) !void {
             },
             .catalog_show => {
                 try cli.renderCatalog(stdout);
+                try stdout.flush();
+                break :blk 0;
+            },
+            .shell_init => |shell_init| {
+                switch (shell_init.shell) {
+                    .zsh => try cli.renderShellInit(stdout, args[0]),
+                }
+                try stdout.flush();
+                break :blk 0;
+            },
+            .export_shell => |export_shell| {
+                switch (export_shell.shell) {
+                    .zsh => switch (export_shell.phase) {
+                        .preexec => try cli.renderExportShellPreexec(allocator, stdout, runtime, export_shell.command_argv),
+                    },
+                }
                 try stdout.flush();
                 break :blk 0;
             },

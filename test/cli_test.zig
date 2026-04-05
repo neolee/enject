@@ -8,6 +8,14 @@ test "cli parseCommand handles help run explain trust and shorthand" {
     try std.testing.expectEqualDeep(cli.ParsedCommand.help, try cli.parseCommand(&.{"enject"}));
     try std.testing.expectEqualDeep(cli.ParsedCommand.help, try cli.parseCommand(&.{ "enject", "--help" }));
     try std.testing.expectEqualDeep(cli.ParsedCommand.catalog_show, try cli.parseCommand(&.{ "enject", "catalog", "show" }));
+    try std.testing.expectEqualDeep(
+        cli.ParsedCommand{ .shell_init = .{ .shell = .zsh } },
+        try cli.parseCommand(&.{ "enject", "shell", "init", "zsh" }),
+    );
+    const export_shell = try cli.parseCommand(&.{ "enject", "export", "--shell", "zsh", "--phase", "preexec", "--", "codex" });
+    try std.testing.expectEqual(cli.ShellKind.zsh, export_shell.export_shell.shell);
+    try std.testing.expectEqual(cli.ShellPhase.preexec, export_shell.export_shell.phase);
+    try std.testing.expectEqualStrings("codex", export_shell.export_shell.command_argv[0]);
     try std.testing.expectEqualDeep(cli.ParsedCommand.trust, try cli.parseCommand(&.{ "enject", "trust" }));
 
     const explain = try cli.parseCommand(&.{ "enject", "explain", "--", "codex" });
@@ -67,6 +75,71 @@ test "cli renderCatalog prints embedded catalog" {
     const output = aw.written();
     try std.testing.expect(std.mem.startsWith(u8, output, "version = 1"));
     try std.testing.expect(std.mem.indexOf(u8, output, "[[rules.command]]") != null);
+}
+
+test "cli renderShellInit prints zsh preexec script" {
+    const allocator = std.testing.allocator;
+
+    var aw: std.Io.Writer.Allocating = .init(allocator);
+    defer aw.deinit();
+
+    try cli.renderShellInit(&aw.writer, "/tmp/enject-dev");
+
+    const output = aw.written();
+    try std.testing.expect(std.mem.indexOf(u8, output, "preexec() {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "_enject_previous_preexec") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "precmd() {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "_enject_previous_precmd") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "_enject_restore() {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "typeset -g ENJECT_RESTORE_ACTIVE=0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "command '/tmp/enject-dev' export --shell zsh --phase preexec --") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "command mktemp /tmp/enject-preexec.XXXXXX") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "export_script=$(<\"$export_file\")") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "command rm -f -- \"$export_file\"") != null);
+}
+
+test "cli renderExportShellPreexec prints zsh exports for resolved values" {
+    const allocator = std.testing.allocator;
+    var env_map = std.process.Environ.Map.init(allocator);
+    defer env_map.deinit();
+
+    const store = support.keychain.Store.init(.native, std.testing.io);
+    const target = support.keychain.GenericPasswordTarget{
+        .service = support.test_service,
+        .account = "openai_api_key",
+    };
+    store.deleteGenericPassword(allocator, target) catch |err| switch (err) {
+        error.NotFound => {},
+        else => return err,
+    };
+    defer store.deleteGenericPassword(allocator, target) catch {};
+    try store.writeGenericPassword(allocator, target, "shell-export-value");
+
+    var temp_dir = std.testing.tmpDir(.{});
+    defer temp_dir.cleanup();
+    const root_path = try support.tempRootPathAlloc(allocator, &temp_dir);
+    defer allocator.free(root_path);
+    const cwd_path = try allocator.dupe(u8, root_path);
+    defer allocator.free(cwd_path);
+    const trust_store_path = try std.fs.path.join(allocator, &.{ root_path, "trust.tsv" });
+    defer allocator.free(trust_store_path);
+
+    const runtime = cli.Runtime{
+        .io = std.testing.io,
+        .environ_map = &env_map,
+        .cwd_path = cwd_path,
+        .global_config_path = null,
+        .trust_store_path = trust_store_path,
+        .service = support.test_service,
+        .keychain_backend = .native,
+    };
+
+    var aw: std.Io.Writer.Allocating = .init(allocator);
+    defer aw.deinit();
+    try cli.renderExportShellPreexec(allocator, &aw.writer, runtime, &.{"codex"});
+
+    const output = aw.written();
+    try std.testing.expect(std.mem.indexOf(u8, output, "export OPENAI_API_KEY='shell-export-value'") != null);
 }
 
 test "cli resolveKeychainBackend honors ENJECT_KEYCHAIN_BACKEND override" {

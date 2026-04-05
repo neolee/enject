@@ -1,21 +1,22 @@
 const std = @import("std");
 const enject = @import("enject");
 
+const config = enject.config;
 const parser = enject.config.parser;
 
 test "config parser loads minimal config defaults" {
     const allocator = std.testing.allocator;
-    var config = try parser.parseSliceAlloc(allocator,
+    var parsed = try parser.parseSliceAlloc(allocator,
         \\version = 1
         \\
     );
-    defer config.deinit(allocator);
+    defer parsed.deinit(allocator);
 
-    try std.testing.expectEqual(@as(u32, 1), config.version);
-    try std.testing.expect(config.project_name == null);
-    try std.testing.expect(config.directory_rule == null);
-    try std.testing.expectEqual(@as(usize, 0), config.command_rules.len);
-    try std.testing.expectEqual(@as(usize, 0), config.bindings.count());
+    try std.testing.expectEqual(@as(u32, 1), parsed.version);
+    try std.testing.expect(parsed.project_name == null);
+    try std.testing.expect(parsed.directory_rule == null);
+    try std.testing.expectEqual(@as(usize, 0), parsed.command_rules.len);
+    try std.testing.expectEqual(@as(usize, 0), parsed.bindings.count());
 }
 
 test "config parser rejects invalid TOML" {
@@ -45,7 +46,7 @@ test "config parser rejects invalid binding schema" {
 
 test "config parser preserves groups references in inject sets" {
     const allocator = std.testing.allocator;
-    var config = try parser.parseSliceAlloc(allocator,
+    var parsed = try parser.parseSliceAlloc(allocator,
         \\version = 1
         \\
         \\[groups.common_llm]
@@ -57,29 +58,63 @@ test "config parser preserves groups references in inject sets" {
         \\inject.global = ["JINA_API_KEY"]
         \\
     );
-    defer config.deinit(allocator);
+    defer parsed.deinit(allocator);
 
-    try std.testing.expectEqual(@as(usize, 1), config.command_rules.len);
-    try std.testing.expectEqual(@as(usize, 1), config.command_rules[0].inject.groups.len);
-    try std.testing.expectEqualStrings("common_llm", config.command_rules[0].inject.groups[0]);
-    try std.testing.expectEqual(@as(usize, 1), config.command_rules[0].inject.global.len);
-    try std.testing.expectEqualStrings("JINA_API_KEY", config.command_rules[0].inject.global[0]);
+    try std.testing.expectEqual(@as(usize, 1), parsed.command_rules.len);
+    try std.testing.expectEqual(@as(usize, 1), parsed.command_rules[0].inject.groups.len);
+    try std.testing.expectEqualStrings("common_llm", parsed.command_rules[0].inject.groups[0]);
+    try std.testing.expectEqual(@as(usize, 1), parsed.command_rules[0].inject.global.len);
+    try std.testing.expectEqualStrings("JINA_API_KEY", parsed.command_rules[0].inject.global[0]);
 }
 
 test "config parser loads env binding sources" {
     const allocator = std.testing.allocator;
-    var config = try parser.parseSliceAlloc(allocator,
+    var parsed = try parser.parseSliceAlloc(allocator,
         \\version = 1
         \\
         \\[bindings]
         \\MY_TOOL_API_KEY = { env = "OPENAI_API_KEY" }
         \\
     );
-    defer config.deinit(allocator);
+    defer parsed.deinit(allocator);
 
-    const binding = config.getBinding("MY_TOOL_API_KEY").?;
+    const binding = parsed.getBinding("MY_TOOL_API_KEY").?;
     switch (binding.source) {
         .env => |env_name| try std.testing.expectEqualStrings("OPENAI_API_KEY", env_name),
         .account => return error.ExpectedEnvBinding,
     }
+}
+
+test "config validation rejects rules.directory in global config" {
+    const allocator = std.testing.allocator;
+    var parsed = try parser.parseSliceAlloc(allocator,
+        \\version = 1
+        \\
+        \\[rules.directory]
+        \\global = ["OPENAI_API_KEY"]
+        \\
+    );
+    defer parsed.deinit(allocator);
+
+    try std.testing.expectError(
+        error.DirectoryRulesOnlyAllowedInProjectConfig,
+        config.validateForSource(&parsed, .global),
+    );
+}
+
+test "config validation allows rules.directory in project config" {
+    const allocator = std.testing.allocator;
+    var parsed = try parser.parseSliceAlloc(allocator,
+        \\version = 1
+        \\
+        \\[project]
+        \\name = "acme"
+        \\
+        \\[rules.directory]
+        \\global = ["OPENAI_API_KEY"]
+        \\
+    );
+    defer parsed.deinit(allocator);
+
+    try config.validateForSource(&parsed, .project);
 }

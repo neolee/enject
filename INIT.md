@@ -150,6 +150,8 @@ This means:
 - `enject codex` injects the global `OPENAI_API_KEY`
 - `enject uv run ...` injects the global `DEEPSEEK_API_KEY`
 
+In practice, `rules.directory` should usually not be used in global config or built-in catalog. A directory-scoped default that applies everywhere is broad, harder to reason about, and easy to overexpose. This should be enforced by the product: `rules.directory` is only allowed in project-local `.enject` files.
+
 ### Standard Project Config
 
 Project config is for behavior that belongs to one repository or directory tree.
@@ -175,6 +177,8 @@ This means:
 - inside the trusted `acme` project tree, `OPENAI_API_KEY` is active as a directory-scoped default
 - when running `uv run rag.py` inside that project tree, `DATABASE_URL` is additionally injected as a command-scoped value
 
+`rules.directory` is primarily intended for project-local `.enject` files. It should be treated as an advanced capability and used sparingly, because it broadens the set of commands that may receive an injected value.
+
 Directory-scoped and command-scoped rules are intentionally separate because they have different lifecycles:
 
 - `rules.directory` models "active for any command run through `enject` while the current working directory is inside this trusted project tree"
@@ -182,7 +186,7 @@ Directory-scoped and command-scoped rules are intentionally separate because the
 
 In future shell integration, these map naturally to:
 
-- `chpwd`-style updates for `rules.directory`
+- optional directory-sensitive shell state for `rules.directory`
 - `preexec`-style updates for `rules.command`
 
 Without shell hooks, both rule kinds should still be resolved at command execution time from the current working directory and argv.
@@ -221,6 +225,11 @@ Precise semantics:
 
 - `rules.directory` contributes a default injection set for every command executed through `enject` while the current working directory is inside the trusted directory tree covered by that `.enject`
 - `rules.command` contributes additional injection only when the command being executed matches its conditions
+
+For safety and clarity, the recommended default style is:
+
+- use `rules.command` for most integrations
+- reserve `rules.directory` for project-local defaults that genuinely need to apply broadly inside one trusted repository
 
 Example:
 
@@ -303,7 +312,6 @@ Recommended commands:
 - `enject <command> [args...]` as shorthand for `run`
 - `enject explain [--] <command> [args...]`
 - `enject explain --check [--] [command] [args...]`
-- `enject export --shell zsh`
 - `enject import <key-file> [--project <project-name>] [--key <env-key>]`
 - `enject secret put <name>`
 - `enject secret rm <name>`
@@ -312,9 +320,9 @@ Recommended commands:
 
 ### Shell Export Mode
 
-`export --shell zsh` is the explicit shell-integration surface for environments that are not launched through `enject run`.
+If shell export mode is added later, it should be an explicit shell-integration surface for environments that are not launched through `enject run`.
 
-For the initial design, its behavior should be:
+If implemented, its behavior should be:
 
 - resolve `rules.directory` from the current working directory
 - output shell code that exports the resulting directory-scoped environment variables
@@ -325,7 +333,9 @@ It should not require a target command and should not resolve `rules.command`, b
 In other words:
 
 - `enject run` and `enject explain` resolve both directory-scoped and command-scoped rules
-- `enject export --shell zsh` resolves directory-scoped rules only
+- a future `enject export --shell zsh` would resolve directory-scoped rules only
+
+Built-in `chpwd` integration should not be a first-version priority. It keeps values resident in the interactive shell environment for longer, broadens the inheritance surface to unrelated child processes, and is therefore less desirable than command-scoped `preexec` integration.
 
 ### Explain Mode
 
@@ -533,12 +543,13 @@ These milestones describe an implementation sequence, not a restriction on the f
 
 - Add `explain --check`
 - Add a small built-in command catalog
-- Add config merging across parent directories
-- Add `export --shell zsh`
-- Add shell-hook integration and completion
+- Add shell integration, prioritizing `preexec` over `chpwd`
+- Consider `export --shell zsh` only as an explicit advanced mode
+- Add completion
 
 ## Possible Future Enhancements
 
+- Add config merging across parent directories
 - Add richer command-pattern rules
 - Add more provider backends
 

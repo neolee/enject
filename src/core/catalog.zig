@@ -1,11 +1,14 @@
 const std = @import("std");
-const parser = @import("../config/parser.zig");
-const model = @import("../config/model.zig");
+const config = @import("../config/root.zig");
 
 const builtins_toml = @embedFile("catalog.toml");
 
-pub fn loadAlloc(allocator: std.mem.Allocator) !model.Config {
-    return parser.parseSliceAlloc(allocator, builtins_toml);
+pub fn loadAlloc(allocator: std.mem.Allocator) !config.model.Config {
+    var parsed = try config.parser.parseSliceAlloc(allocator, builtins_toml);
+    errdefer parsed.deinit(allocator);
+
+    try config.validateForSource(&parsed, .built_in);
+    return parsed;
 }
 
 pub fn text() []const u8 {

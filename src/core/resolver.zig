@@ -85,6 +85,9 @@ pub fn loadContextAlloc(
             error.FileNotFound => null,
             else => return err,
         };
+        if (result.global_config) |*global_config| {
+            try config.validateForSource(global_config, .global);
+        }
     }
 
     const trust_store = trust.store.Store.init(options.trust_store_path, io);
@@ -95,6 +98,9 @@ pub fn loadContextAlloc(
         result.project_root = try allocator.dupe(u8, trusted.root_dir);
         result.trusted_project_config_path = try allocator.dupe(u8, trusted.config_path);
         result.project_config = try config.parser.parseFileAlloc(allocator, io, trusted.config_path);
+        if (result.project_config) |*project_config| {
+            try config.validateForSource(project_config, .project);
+        }
     }
 
     if (discovery.untrusted) |untrusted| {

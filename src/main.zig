@@ -172,6 +172,7 @@ fn describeError(err: anyerror) []const u8 {
         error.ProjectConfigNotFound => "no .enject file found from the current directory upward",
         error.BindingConflict => "conflicting bindings resolved for the same environment variable",
         error.BindingCycle => "cyclic env() binding detected",
+        error.DirectoryRulesOnlyAllowedInProjectConfig => "rules.directory is only allowed in project .enject files",
         error.NotFound => "secret not found",
         error.FileNotFound => "file not found",
         error.UnsupportedOperation => "secret ls is not supported with the selected keychain backend",

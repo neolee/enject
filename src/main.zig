@@ -31,6 +31,11 @@ pub fn main(init: std.process.Init) !void {
                 try stdout.flush();
                 break :blk 0;
             },
+            .catalog_show => {
+                try cli.renderCatalog(stdout);
+                try stdout.flush();
+                break :blk 0;
+            },
             .trust => {
                 const trusted_path = cli.trustNearestConfigAlloc(allocator, runtime) catch |err| {
                     try stderr.print("error: {s}\n", .{describeError(err)});

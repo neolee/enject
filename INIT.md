@@ -298,6 +298,7 @@ This section describes the intended command surface of the product. Not every co
 
 Recommended commands:
 
+- `enject catalog show`
 - `enject run -- <command> [args...]`
 - `enject <command> [args...]` as shorthand for `run`
 - `enject explain [--] <command> [args...]`
@@ -339,6 +340,16 @@ In other words:
 It must not reveal secret values.
 
 `explain --check` should extend `explain` by checking whether each resolved secret is currently present in the selected backend, while still never printing secret values.
+
+### Catalog Show
+
+`catalog show` should print the built-in command catalog exactly as shipped with the current binary.
+
+Its purpose is diagnostic and explanatory:
+
+- show the built-in base layer that global and project config overlay
+- make it easy to inspect built-in groups and command rules
+- avoid requiring users to locate packaged resource files manually
 
 ### Import Command
 

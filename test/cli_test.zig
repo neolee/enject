@@ -7,6 +7,7 @@ const cli = enject.cli;
 test "cli parseCommand handles help run explain trust and shorthand" {
     try std.testing.expectEqualDeep(cli.ParsedCommand.help, try cli.parseCommand(&.{"enject"}));
     try std.testing.expectEqualDeep(cli.ParsedCommand.help, try cli.parseCommand(&.{ "enject", "--help" }));
+    try std.testing.expectEqualDeep(cli.ParsedCommand.catalog_show, try cli.parseCommand(&.{ "enject", "catalog", "show" }));
     try std.testing.expectEqualDeep(cli.ParsedCommand.trust, try cli.parseCommand(&.{ "enject", "trust" }));
 
     const explain = try cli.parseCommand(&.{ "enject", "explain", "--", "codex" });
@@ -53,6 +54,19 @@ test "cli parseCommand handles help run explain trust and shorthand" {
     try std.testing.expectEqualStrings("keys.env", import_cmd.import_env.file_path);
     try std.testing.expectEqualStrings("acme", import_cmd.import_env.project_name.?);
     try std.testing.expectEqualStrings("DATABASE_URL", import_cmd.import_env.env_key.?);
+}
+
+test "cli renderCatalog prints embedded catalog" {
+    const allocator = std.testing.allocator;
+
+    var aw: std.Io.Writer.Allocating = .init(allocator);
+    defer aw.deinit();
+
+    try cli.renderCatalog(&aw.writer);
+
+    const output = aw.written();
+    try std.testing.expect(std.mem.startsWith(u8, output, "version = 1"));
+    try std.testing.expect(std.mem.indexOf(u8, output, "[[rules.command]]") != null);
 }
 
 test "cli resolveKeychainBackend honors ENJECT_KEYCHAIN_BACKEND override" {

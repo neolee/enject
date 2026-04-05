@@ -1,5 +1,6 @@
 const builtin = @import("builtin");
 const std = @import("std");
+const catalog = @import("../core/catalog.zig");
 const resolver = @import("../core/resolver.zig");
 const keychain = @import("../providers/keychain.zig");
 const trust = @import("../trust/store.zig");
@@ -16,6 +17,7 @@ pub const Runtime = struct {
 
 pub const ParsedCommand = union(enum) {
     help,
+    catalog_show,
     trust,
     explain: ExplainCommand,
     run: RunCommand,
@@ -171,6 +173,12 @@ pub fn parseCommand(args: []const []const u8) !ParsedCommand {
     if (std.mem.eql(u8, verb, "trust")) {
         if (verbose or args.len != index + 1) return error.UnexpectedArgument;
         return .trust;
+    }
+    if (std.mem.eql(u8, verb, "catalog")) {
+        if (verbose) return error.UnexpectedArgument;
+        if (args.len != index + 2) return error.UnexpectedArgument;
+        if (!std.mem.eql(u8, args[index + 1], "show")) return error.UnknownSubcommand;
+        return .catalog_show;
     }
     if (std.mem.eql(u8, verb, "explain")) {
         if (verbose) return error.UnexpectedArgument;
@@ -532,6 +540,7 @@ pub fn renderDoctor(writer: anytype, data: *const DoctorData) !void {
 pub fn printUsage(writer: anytype, program_name: []const u8) !void {
     try writer.print(
         \\Usage:
+        \\  {s} catalog show
         \\  {s} trust
         \\  {s} secret put <name> [--value <value>]
         \\  {s} secret ls
@@ -541,7 +550,14 @@ pub fn printUsage(writer: anytype, program_name: []const u8) !void {
         \\  {s} [--verbose] run [--verbose] -- <command> [args...]
         \\  {s} [--verbose] <command> [args...]
         \\
-    , .{ program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name });
+    , .{ program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name, program_name });
+}
+
+pub fn renderCatalog(writer: anytype) !void {
+    try writer.writeAll(catalog.text());
+    if (catalog.text().len == 0 or catalog.text()[catalog.text().len - 1] != '\n') {
+        try writer.writeByte('\n');
+    }
 }
 
 pub fn displayProgramName(arg0: []const u8) []const u8 {

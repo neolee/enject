@@ -20,6 +20,10 @@ Development note:
 
 - `ENJECT_KEYCHAIN_BACKEND=native|security_cli` can be used to force a specific Keychain backend while testing.
 
+Current utility commands:
+
+- `enject catalog show` prints the built-in command catalog embedded in the binary.
+
 Current built-in command defaults:
 
 - `codex` -> `OPENAI_API_KEY`

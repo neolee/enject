@@ -43,8 +43,21 @@ pub fn main(init: std.process.Init) !void {
                 try stdout.flush();
                 break :blk 0;
             },
-            .explain => |command_argv| {
-                var data = cli.explainAlloc(allocator, runtime, command_argv) catch |err| {
+            .explain => |explain_cmd| {
+                if (explain_cmd.check) {
+                    var data = cli.doctorAlloc(allocator, runtime, explain_cmd.command_argv) catch |err| {
+                        try stderr.print("error: {s}\n", .{describeError(err)});
+                        try stderr.flush();
+                        std.process.exit(1);
+                    };
+                    defer data.deinit(allocator);
+
+                    try cli.renderDoctor(stdout, &data);
+                    try stdout.flush();
+                    break :blk 0;
+                }
+
+                var data = cli.explainAlloc(allocator, runtime, explain_cmd.command_argv) catch |err| {
                     try stderr.print("error: {s}\n", .{describeError(err)});
                     try stderr.flush();
                     std.process.exit(1);

@@ -17,10 +17,15 @@ pub const Runtime = struct {
 pub const ParsedCommand = union(enum) {
     help,
     trust,
-    explain: []const []const u8,
+    explain: ExplainCommand,
     run: []const []const u8,
     secret: SecretCommand,
     import_env: ImportCommand,
+};
+
+pub const ExplainCommand = struct {
+    command_argv: []const []const u8,
+    check: bool = false,
 };
 
 pub const SecretCommand = union(enum) {
@@ -55,6 +60,28 @@ pub const ExplainData = struct {
     pub fn deinit(self: *ExplainData, allocator: std.mem.Allocator) void {
         self.context.deinit(allocator);
         self.resolution.deinit(allocator);
+        self.* = undefined;
+    }
+};
+
+pub const DoctorBindingStatus = enum {
+    present,
+    missing,
+};
+
+pub const DoctorData = struct {
+    command_argv: []const []const u8,
+    cwd_path: []const u8,
+    global_config_path: ?[]const u8,
+    keychain_backend: keychain.Backend,
+    context: resolver.LoadedContext,
+    resolution: resolver.Resolution,
+    binding_statuses: []DoctorBindingStatus,
+
+    pub fn deinit(self: *DoctorData, allocator: std.mem.Allocator) void {
+        self.context.deinit(allocator);
+        self.resolution.deinit(allocator);
+        allocator.free(self.binding_statuses);
         self.* = undefined;
     }
 };
@@ -129,7 +156,10 @@ pub fn parseCommand(args: []const []const u8) !ParsedCommand {
         return .trust;
     }
     if (std.mem.eql(u8, verb, "explain")) {
-        return .{ .explain = trimCommandSeparator(args[2..]) };
+        return .{ .explain = try parseExplainCommand(args[2..], false) };
+    }
+    if (std.mem.eql(u8, verb, "doctor")) {
+        return .{ .explain = try parseExplainCommand(args[2..], true) };
     }
     if (std.mem.eql(u8, verb, "run")) {
         return .{ .run = trimCommandSeparator(args[2..]) };
@@ -190,6 +220,51 @@ pub fn explainAlloc(
         .global_config_path = runtime.global_config_path,
         .context = context,
         .resolution = resolution,
+    };
+}
+
+pub fn doctorAlloc(
+    allocator: std.mem.Allocator,
+    runtime: Runtime,
+    command_argv: []const []const u8,
+) !DoctorData {
+    var context = try resolver.loadContextAlloc(allocator, runtime.io, .{
+        .global_config_path = runtime.global_config_path,
+        .cwd_path = runtime.cwd_path,
+        .trust_store_path = runtime.trust_store_path,
+    });
+    errdefer context.deinit(allocator);
+
+    var resolution = try resolver.resolveAlloc(allocator, &context, command_argv, runtime.service);
+    errdefer resolution.deinit(allocator);
+
+    const store = keychain.Store.init(runtime.keychain_backend, runtime.io);
+    const binding_statuses = try allocator.alloc(DoctorBindingStatus, resolution.bindings.len);
+    errdefer allocator.free(binding_statuses);
+
+    for (resolution.bindings, 0..) |binding, index| {
+        const value = store.readGenericPasswordAlloc(allocator, .{
+            .service = binding.service,
+            .account = binding.account,
+        }) catch |err| switch (err) {
+            error.NotFound => {
+                binding_statuses[index] = .missing;
+                continue;
+            },
+            else => return err,
+        };
+        defer allocator.free(value);
+        binding_statuses[index] = .present;
+    }
+
+    return .{
+        .command_argv = command_argv,
+        .cwd_path = runtime.cwd_path,
+        .global_config_path = runtime.global_config_path,
+        .keychain_backend = runtime.keychain_backend,
+        .context = context,
+        .resolution = resolution,
+        .binding_statuses = binding_statuses,
     };
 }
 
@@ -347,7 +422,6 @@ pub fn runCommand(
 }
 
 pub fn renderExplain(writer: anytype, data: *const ExplainData) !void {
-    try writer.print("Explain\n", .{});
     try writer.print("Command:", .{});
     for (data.command_argv) |arg| {
         try writer.print(" {s}", .{arg});
@@ -393,6 +467,54 @@ pub fn renderExplain(writer: anytype, data: *const ExplainData) !void {
     }
 }
 
+pub fn renderDoctor(writer: anytype, data: *const DoctorData) !void {
+    try writer.print("Backend: {s}\n", .{backendName(data.keychain_backend)});
+    if (data.command_argv.len == 0) {
+        try writer.print("Command: none (directory-scoped rules only)\n", .{});
+    } else {
+        try writer.print("Command:", .{});
+        for (data.command_argv) |arg| {
+            try writer.print(" {s}", .{arg});
+        }
+        try writer.print("\n", .{});
+    }
+
+    try writer.print("Resolution mode: config, rule, and secret availability check (no values shown)\n", .{});
+    try writer.print("\nContext\n", .{});
+    try writer.print("  cwd: {s}\n", .{data.cwd_path});
+    if (data.context.global_config != null and data.global_config_path != null) {
+        try writer.print("  global config: {s}\n", .{data.global_config_path.?});
+    } else {
+        try writer.print("  global config: none\n", .{});
+    }
+    if (data.context.project_root) |path| {
+        try writer.print("  project root: {s}\n", .{path});
+    } else {
+        try writer.print("  project root: none\n", .{});
+    }
+    if (data.context.trusted_project_config_path) |path| {
+        try writer.print("  project config: {s}\n", .{path});
+    } else {
+        try writer.print("  project config: none\n", .{});
+    }
+    if (data.context.ignored_untrusted_project_config_path) |path| {
+        try writer.print("  ignored untrusted project config: {s}\n", .{path});
+    }
+
+    try writer.print("\nBindings\n", .{});
+    if (data.resolution.bindings.len == 0) {
+        try writer.print("  none\n", .{});
+        return;
+    }
+
+    for (data.resolution.bindings, data.binding_statuses) |binding, status| {
+        try writer.print(
+            "  {s} -> {s}/{s} ({s}, {s})\n",
+            .{ binding.env_name, binding.service, binding.account, @tagName(binding.lookup), @tagName(status) },
+        );
+    }
+}
+
 pub fn printUsage(writer: anytype, program_name: []const u8) !void {
     try writer.print(
         \\Usage:
@@ -401,7 +523,7 @@ pub fn printUsage(writer: anytype, program_name: []const u8) !void {
         \\  {s} secret ls
         \\  {s} secret rm <name>
         \\  {s} import <key-file> [--project <project-name>] [--key <env-key>]
-        \\  {s} explain [--] <command> [args...]
+        \\  {s} explain [--check] [--] [command] [args...]
         \\  {s} run -- <command> [args...]
         \\  {s} <command> [args...]
         \\
@@ -415,6 +537,24 @@ pub fn displayProgramName(arg0: []const u8) []const u8 {
 fn trimCommandSeparator(args: []const []const u8) []const []const u8 {
     if (args.len > 0 and std.mem.eql(u8, args[0], "--")) return args[1..];
     return args;
+}
+
+fn parseExplainCommand(args: []const []const u8, default_check: bool) !ExplainCommand {
+    var check = default_check;
+    var index: usize = 0;
+    while (index < args.len) : (index += 1) {
+        const arg = args[index];
+        if (std.mem.eql(u8, arg, "--check")) {
+            check = true;
+            continue;
+        }
+        break;
+    }
+
+    return .{
+        .command_argv = trimCommandSeparator(args[index..]),
+        .check = check,
+    };
 }
 
 fn parseSecretCommand(args: []const []const u8) !SecretCommand {
@@ -503,6 +643,13 @@ fn defaultKeychainBackend() keychain.Backend {
     return switch (builtin.os.tag) {
         .macos => .native,
         else => .security_cli,
+    };
+}
+
+fn backendName(backend: keychain.Backend) []const u8 {
+    return switch (backend) {
+        .native => "native",
+        .security_cli => "security_cli",
     };
 }
 

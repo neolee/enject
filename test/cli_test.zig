@@ -10,7 +10,16 @@ test "cli parseCommand handles help run explain trust and shorthand" {
     try std.testing.expectEqualDeep(cli.ParsedCommand.trust, try cli.parseCommand(&.{ "enject", "trust" }));
 
     const explain = try cli.parseCommand(&.{ "enject", "explain", "--", "codex" });
-    try std.testing.expectEqualStrings("codex", explain.explain[0]);
+    try std.testing.expectEqualStrings("codex", explain.explain.command_argv[0]);
+    try std.testing.expect(!explain.explain.check);
+
+    const explain_check = try cli.parseCommand(&.{ "enject", "explain", "--check" });
+    try std.testing.expectEqual(@as(usize, 0), explain_check.explain.command_argv.len);
+    try std.testing.expect(explain_check.explain.check);
+
+    const doctor_alias = try cli.parseCommand(&.{ "enject", "doctor", "--", "codex" });
+    try std.testing.expectEqualStrings("codex", doctor_alias.explain.command_argv[0]);
+    try std.testing.expect(doctor_alias.explain.check);
 
     const run_cmd = try cli.parseCommand(&.{ "enject", "run", "--", "uv", "run" });
     try std.testing.expectEqualStrings("uv", run_cmd.run[0]);
@@ -181,7 +190,6 @@ test "cli explain renders trusted project resolution" {
     try cli.renderExplain(&aw.writer, &explain_data);
 
     const output = aw.written();
-    try std.testing.expect(std.mem.indexOf(u8, output, "Explain") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "Resolution mode: config and rule resolution only (no secrets read)") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "Command: codex") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "Context") != null);
@@ -189,6 +197,97 @@ test "cli explain renders trusted project resolution" {
     try std.testing.expect(std.mem.indexOf(u8, output, "OPENAI_API_KEY") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "DATABASE_URL") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "staging/database_url") != null);
+}
+
+test "cli doctor renders secret availability" {
+    const allocator = std.testing.allocator;
+    var env_map = std.process.Environ.Map.init(allocator);
+    defer env_map.deinit();
+
+    var temp_dir = std.testing.tmpDir(.{});
+    defer temp_dir.cleanup();
+
+    const global_config_text =
+        \\version = 1
+        \\
+        \\[[rules.command]]
+        \\match.argv = ["codex"]
+        \\inject.global = ["OPENAI_API_KEY"]
+        \\
+    ;
+    const project_config_text =
+        \\version = 1
+        \\
+        \\[project]
+        \\name = "acme"
+        \\
+        \\[rules.directory]
+        \\project = ["DATABASE_URL"]
+        \\
+        \\[bindings]
+        \\DATABASE_URL = { account = "staging/database_url" }
+        \\
+    ;
+
+    try temp_dir.dir.createDirPath(std.testing.io, "project/nested");
+    try temp_dir.dir.writeFile(std.testing.io, .{
+        .sub_path = "project/.enject",
+        .data = project_config_text,
+    });
+    try temp_dir.dir.writeFile(std.testing.io, .{
+        .sub_path = "config.toml",
+        .data = global_config_text,
+    });
+
+    const root_path = try support.tempRootPathAlloc(allocator, &temp_dir);
+    defer allocator.free(root_path);
+    const cwd_path = try std.fs.path.join(allocator, &.{ root_path, "project", "nested" });
+    defer allocator.free(cwd_path);
+    const global_config_path = try std.fs.path.join(allocator, &.{ root_path, "config.toml" });
+    defer allocator.free(global_config_path);
+    const trust_store_path = try std.fs.path.join(allocator, &.{ root_path, "trust.tsv" });
+    defer allocator.free(trust_store_path);
+    const project_config_path = try std.fs.path.join(allocator, &.{ root_path, "project", ".enject" });
+    defer allocator.free(project_config_path);
+
+    const trust_store = support.trust.Store.init(trust_store_path, std.testing.io);
+    try trust_store.trustConfig(allocator, project_config_path);
+
+    const store = support.keychain.Store.init(.native, std.testing.io);
+    const present_target = support.keychain.GenericPasswordTarget{
+        .service = support.test_service,
+        .account = "openai_api_key",
+    };
+    store.deleteGenericPassword(allocator, present_target) catch |err| switch (err) {
+        error.NotFound => {},
+        else => return err,
+    };
+    defer store.deleteGenericPassword(allocator, present_target) catch {};
+    try store.writeGenericPassword(allocator, present_target, "doctor-secret");
+
+    const runtime = cli.Runtime{
+        .io = std.testing.io,
+        .environ_map = &env_map,
+        .cwd_path = cwd_path,
+        .global_config_path = global_config_path,
+        .trust_store_path = trust_store_path,
+        .service = support.test_service,
+        .keychain_backend = .native,
+    };
+
+    var doctor_data = try cli.doctorAlloc(allocator, runtime, &.{"codex"});
+    defer doctor_data.deinit(allocator);
+
+    var aw: std.Io.Writer.Allocating = .init(allocator);
+    defer aw.deinit();
+    try cli.renderDoctor(&aw.writer, &doctor_data);
+
+    const output = aw.written();
+    try std.testing.expect(std.mem.indexOf(u8, output, "Backend: native") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "OPENAI_API_KEY") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "DATABASE_URL") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "present") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "missing") != null);
 }
 
 test "cli runCommand injects resolved environment into child process" {

@@ -274,13 +274,13 @@ Recommended commands:
 - `enject run -- <command> [args...]`
 - `enject <command> [args...]` as shorthand for `run`
 - `enject explain [--] <command> [args...]`
+- `enject explain --check [--] [command] [args...]`
 - `enject export --shell zsh`
 - `enject import <key-file> [--project <project-name>] [--key <env-key>]`
 - `enject secret put <name>`
 - `enject secret rm <name>`
 - `enject secret ls`
 - `enject trust`
-- `enject doctor`
 
 ### Shell Export Mode
 
@@ -310,6 +310,8 @@ In other words:
 - whether each variable used global lookup, project lookup, or a binding override
 
 It must not reveal secret values.
+
+`explain --check` should extend `explain` by checking whether each resolved secret is currently present in the selected backend, while still never printing secret values.
 
 ### Import Command
 
@@ -484,15 +486,23 @@ These milestones describe an implementation sequence, not a restriction on the f
 
 - Add `import`
 - Add `secret put`, `secret rm`, and `secret ls`
-- Add config merging across parent directories
-- Add a small built-in command catalog
-- Add `doctor`
+- Improve `secret put` with interactive hidden input
+- Make `run` tolerant of missing secrets, with clear warnings instead of aborting command execution
+- Improve `explain` and runtime error output so missing or conflicting bindings are diagnosable
+- Add backend override for development and diagnostics via `ENJECT_KEYCHAIN_BACKEND`
 
 ### Milestone 3
 
+- Add `explain --check`
+- Add a small built-in command catalog
+- Add config merging across parent directories
+- Add `export --shell zsh`
+- Add shell-hook integration and completion
+
+## Possible Future Enhancements
+
 - Add richer command-pattern rules
 - Add more provider backends
-- Improve shell integration and completion
 
 ## Non-Goals for the First Version
 

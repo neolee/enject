@@ -1,0 +1,11 @@
+.DS_Store
+*.log
+
+.zig-cache/
+zig-out/
+
+.idea/
+
+local/
+db/
+ref/

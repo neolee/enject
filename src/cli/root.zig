@@ -58,12 +58,18 @@ pub const RunCommand = struct {
 pub const SecretCommand = union(enum) {
     put: SecretPut,
     ls,
-    rm: []const u8,
+    rm: SecretRm,
 };
 
 pub const SecretPut = struct {
     name: []const u8,
     value: ?[]const u8 = null,
+    project_name: ?[]const u8 = null,
+};
+
+pub const SecretRm = struct {
+    name: []const u8,
+    project_name: ?[]const u8 = null,
 };
 
 pub const ImportCommand = struct {
@@ -327,8 +333,9 @@ pub fn putSecret(
     runtime: Runtime,
     name: []const u8,
     value: []const u8,
+    project_name: ?[]const u8,
 ) ![]u8 {
-    const account = try secretAccountFromNameAlloc(allocator, name);
+    const account = try accountFromEnvNameAlloc(allocator, name, project_name);
     errdefer allocator.free(account);
 
     const store = keychain.Store.init(runtime.keychain_backend, runtime.io);
@@ -344,8 +351,9 @@ pub fn removeSecret(
     allocator: std.mem.Allocator,
     runtime: Runtime,
     name: []const u8,
+    project_name: ?[]const u8,
 ) ![]u8 {
-    const account = try secretAccountFromNameAlloc(allocator, name);
+    const account = try accountFromEnvNameAlloc(allocator, name, project_name);
     errdefer allocator.free(account);
 
     const store = keychain.Store.init(runtime.keychain_backend, runtime.io);
@@ -574,9 +582,9 @@ pub fn printUsage(writer: anytype, program_name: []const u8) !void {
         \\  {s} shell init zsh
         \\  {s} export --shell zsh --phase preexec -- <command> [args...]
         \\  {s} trust
-        \\  {s} secret put <name> [--value <value>]
+        \\  {s} secret put <name> [--project <project-name>] [--value <value>]
         \\  {s} secret ls
-        \\  {s} secret rm <name>
+        \\  {s} secret rm <name> [--project <project-name>]
         \\  {s} import <key-file> [--project <project-name>] [--key <env-key>]
         \\  {s} explain [--check] [--] [command] [args...]
         \\  {s} [--verbose] run [--verbose] -- <command> [args...]
@@ -806,22 +814,49 @@ fn parseSecretCommand(args: []const []const u8) !SecretCommand {
         return .ls;
     }
     if (std.mem.eql(u8, verb, "rm")) {
-        if (args.len != 2) return error.UnexpectedArgument;
-        return .{ .rm = args[1] };
+        if (args.len < 2) return error.UnexpectedArgument;
+        var command: SecretRm = .{
+            .name = args[1],
+            .project_name = null,
+        };
+        var index: usize = 2;
+        while (index < args.len) : (index += 1) {
+            const arg = args[index];
+            if (std.mem.eql(u8, arg, "--project")) {
+                index += 1;
+                if (index >= args.len) return error.MissingValue;
+                command.project_name = args[index];
+                continue;
+            }
+            return error.UnexpectedArgument;
+        }
+        return .{ .rm = command };
     }
     if (std.mem.eql(u8, verb, "put")) {
-        if (args.len == 2) {
-            return .{ .put = .{
-                .name = args[1],
-                .value = null,
-            } };
-        }
-        if (args.len != 4) return error.UnexpectedArgument;
-        if (!std.mem.eql(u8, args[2], "--value")) return error.UnexpectedArgument;
-        return .{ .put = .{
+        if (args.len < 2) return error.UnexpectedArgument;
+        var command: SecretPut = .{
             .name = args[1],
-            .value = args[3],
-        } };
+            .value = null,
+            .project_name = null,
+        };
+        var index: usize = 2;
+        while (index < args.len) : (index += 1) {
+            const arg = args[index];
+            if (std.mem.eql(u8, arg, "--value")) {
+                index += 1;
+                if (index >= args.len) return error.MissingValue;
+                command.value = args[index];
+                continue;
+            }
+            if (std.mem.eql(u8, arg, "--project")) {
+                index += 1;
+                if (index >= args.len) return error.MissingValue;
+                command.project_name = args[index];
+                continue;
+            }
+            return error.UnexpectedArgument;
+        }
+        return .{ .put = command };
     }
     return error.UnknownSubcommand;
 }
@@ -995,13 +1030,6 @@ fn resolveEnvAliasValueAlloc(
     }
 
     return null;
-}
-
-fn secretAccountFromNameAlloc(allocator: std.mem.Allocator, name: []const u8) ![]u8 {
-    if (std.mem.indexOfScalar(u8, name, '/')) |_| {
-        return allocator.dupe(u8, name);
-    }
-    return resolver.canonicalizeEnvNameAlloc(allocator, name);
 }
 
 fn accountFromEnvNameAlloc(

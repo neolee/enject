@@ -50,13 +50,23 @@ test "cli parseCommand handles help run explain trust and shorthand" {
     const secret_put = try cli.parseCommand(&.{ "enject", "secret", "put", "OPENAI_API_KEY", "--value", "abc" });
     try std.testing.expectEqualStrings("OPENAI_API_KEY", secret_put.secret.put.name);
     try std.testing.expectEqualStrings("abc", secret_put.secret.put.value.?);
+    try std.testing.expect(secret_put.secret.put.project_name == null);
 
     const secret_put_interactive = try cli.parseCommand(&.{ "enject", "secret", "put", "OPENAI_API_KEY" });
     try std.testing.expectEqualStrings("OPENAI_API_KEY", secret_put_interactive.secret.put.name);
     try std.testing.expect(secret_put_interactive.secret.put.value == null);
 
+    const secret_put_project = try cli.parseCommand(&.{ "enject", "secret", "put", "DATABASE_URL", "--project", "acme", "--value", "abc" });
+    try std.testing.expectEqualStrings("DATABASE_URL", secret_put_project.secret.put.name);
+    try std.testing.expectEqualStrings("acme", secret_put_project.secret.put.project_name.?);
+    try std.testing.expectEqualStrings("abc", secret_put_project.secret.put.value.?);
+
     const secret_ls = try cli.parseCommand(&.{ "enject", "secret", "ls" });
     try std.testing.expectEqualDeep(cli.SecretCommand.ls, secret_ls.secret);
+
+    const secret_rm_project = try cli.parseCommand(&.{ "enject", "secret", "rm", "DATABASE_URL", "--project", "acme" });
+    try std.testing.expectEqualStrings("DATABASE_URL", secret_rm_project.secret.rm.name);
+    try std.testing.expectEqualStrings("acme", secret_rm_project.secret.rm.project_name.?);
 
     const import_cmd = try cli.parseCommand(&.{ "enject", "import", "keys.env", "--project", "acme", "--key", "DATABASE_URL" });
     try std.testing.expectEqualStrings("keys.env", import_cmd.import_env.file_path);
@@ -646,7 +656,7 @@ test "cli secret put ls and rm manage keychain entries" {
         .service = "com.github.neolee.enject.tests.cli",
     };
 
-    const account = try cli.putSecret(allocator, runtime, "OPENAI_API_KEY", "secret-one");
+    const account = try cli.putSecret(allocator, runtime, "OPENAI_API_KEY", "secret-one", null);
     defer allocator.free(account);
     try std.testing.expectEqualStrings("openai_api_key", account);
 
@@ -662,7 +672,7 @@ test "cli secret put ls and rm manage keychain entries" {
     }
     try std.testing.expect(found);
 
-    const removed = try cli.removeSecret(allocator, runtime, "OPENAI_API_KEY");
+    const removed = try cli.removeSecret(allocator, runtime, "OPENAI_API_KEY", null);
     defer allocator.free(removed);
     try std.testing.expectEqualStrings("openai_api_key", removed);
 
@@ -674,6 +684,45 @@ test "cli secret put ls and rm manage keychain entries" {
     for (accounts_after_rm) |item| {
         try std.testing.expect(!std.mem.eql(u8, item, "openai_api_key"));
     }
+}
+
+test "cli secret put and rm support project-scoped accounts" {
+    const allocator = std.testing.allocator;
+    var env_map = std.process.Environ.Map.init(allocator);
+    defer env_map.deinit();
+
+    var temp_dir = std.testing.tmpDir(.{});
+    defer temp_dir.cleanup();
+
+    const root_path = try support.tempRootPathAlloc(allocator, &temp_dir);
+    defer allocator.free(root_path);
+    const trust_store_path = try std.fs.path.join(allocator, &.{ root_path, "trust.tsv" });
+    defer allocator.free(trust_store_path);
+
+    const runtime = cli.Runtime{
+        .io = std.testing.io,
+        .environ_map = &env_map,
+        .cwd_path = root_path,
+        .global_config_path = null,
+        .trust_store_path = trust_store_path,
+        .service = "com.github.neolee.enject.tests.cli.project",
+    };
+
+    const account = try cli.putSecret(allocator, runtime, "DATABASE_URL", "secret-two", "acme");
+    defer allocator.free(account);
+    try std.testing.expectEqualStrings("acme/database_url", account);
+
+    const store = support.keychain.Store.init(.native, std.testing.io);
+    const loaded = try store.readGenericPasswordAlloc(allocator, .{
+        .service = runtime.service,
+        .account = "acme/database_url",
+    });
+    defer allocator.free(loaded);
+    try std.testing.expectEqualStrings("secret-two", loaded);
+
+    const removed = try cli.removeSecret(allocator, runtime, "DATABASE_URL", "acme");
+    defer allocator.free(removed);
+    try std.testing.expectEqualStrings("acme/database_url", removed);
 }
 
 test "cli importSecretsAlloc imports global and project scoped secrets" {

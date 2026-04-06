@@ -103,7 +103,7 @@ pub fn main(init: std.process.Init) !void {
                             };
                         defer if (put_cmd.value == null) allocator.free(secret_value);
 
-                        const account = cli.putSecret(allocator, runtime, put_cmd.name, secret_value) catch |err| {
+                        const account = cli.putSecret(allocator, runtime, put_cmd.name, secret_value, put_cmd.project_name) catch |err| {
                             try stderr.print("error: {s}\n", .{describeError(err)});
                             try stderr.flush();
                             std.process.exit(1);
@@ -125,8 +125,8 @@ pub fn main(init: std.process.Init) !void {
                             try stdout.print("{s}\n", .{account});
                         }
                     },
-                    .rm => |name| {
-                        const account = cli.removeSecret(allocator, runtime, name) catch |err| {
+                    .rm => |rm_cmd| {
+                        const account = cli.removeSecret(allocator, runtime, rm_cmd.name, rm_cmd.project_name) catch |err| {
                             try stderr.print("error: {s}\n", .{describeError(err)});
                             try stderr.flush();
                             std.process.exit(1);

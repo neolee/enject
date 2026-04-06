@@ -23,9 +23,9 @@ Current CLI surface:
 
 - `enject catalog show` prints the built-in command catalog embedded in the binary.
 - `enject trust`
-- `enject secret put <name> [--value <value>]`
+- `enject secret put <name> [--project <project-name>] [--value <value>]`
 - `enject secret ls`
-- `enject secret rm <name>`
+- `enject secret rm <name> [--project <project-name>]`
 - `enject import <key-file> [--project <project-name>] [--key <env-key>]`
 - `enject explain [--check] [--] [command] [args...]`
 - `enject run -- <command> [args...]`

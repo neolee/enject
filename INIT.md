@@ -336,8 +336,8 @@ Recommended commands:
 - `enject explain [--] <command> [args...]`
 - `enject explain --check [--] [command] [args...]`
 - `enject import <key-file> [--project <project-name>] [--key <env-key>]`
-- `enject secret put <name>`
-- `enject secret rm <name>`
+- `enject secret put <name> [--project <project-name>] [--value <value>]`
+- `enject secret rm <name> [--project <project-name>]`
 - `enject secret ls`
 - `enject trust`
 

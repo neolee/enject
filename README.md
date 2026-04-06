@@ -4,35 +4,175 @@
 
 The initial target platform is macOS, with macOS Keychain as the first secret backend and Zig as the implementation language.
 
-## Status
+## Build
 
-This repository is not yet at a `1.0` release, but the core CLI and zsh shell integration are working.
+```shell
+zig build
+./zig-out/bin/enject --help
+```
 
-Current work is focused on:
+For local daily use, make the built binary available on your `PATH`.
 
-- shell integration polish
-- built-in catalog expansion
-- documentation and packaging
-- completion and release ergonomics
+Convenient release-oriented build steps are also available:
 
-Development note:
+```shell
+zig build release-safe
+zig build release-fast
+```
 
-- `ENJECT_KEYCHAIN_BACKEND=native|security_cli` can be used to force a specific Keychain backend while testing.
+Recommended default for distribution:
 
-Current CLI surface:
+```shell
+zig build release-safe
+```
 
-- `enject catalog show` prints the built-in command catalog embedded in the binary.
-- `enject trust`
-- `enject secret put <name> [--project <project-name>] [--value <value>]`
-- `enject secret ls`
-- `enject secret rm <name> [--project <project-name>]`
-- `enject import <key-file> [--project <project-name>] [--key <env-key>]`
-- `enject explain [--check] [--] [command] [args...]`
-- `enject run -- <command> [args...]`
-- `enject <command> [args...]`
-- `enject shell init zsh`
+## Quick Start
 
-Current built-in command defaults:
+1. Store a secret in Keychain.
+
+```shell
+enject secret put OPENAI_API_KEY
+```
+
+Or non-interactively:
+
+```shell
+enject secret put OPENAI_API_KEY --value 'sk-...'
+```
+
+2. Inspect what `enject` would inject for a command.
+
+```shell
+enject explain --check -- codex
+```
+
+3. Run the command through `enject`.
+
+```shell
+enject codex
+```
+
+4. Optionally enable `zsh` shell integration so common commands run through `enject` automatically.
+
+```shell
+eval "$(enject shell init zsh)"
+```
+
+## Common Commands
+
+```shell
+enject catalog show
+enject trust
+enject secret put <name> [--project <project-name>] [--value <value>]
+enject secret ls
+enject secret rm <name> [--project <project-name>]
+enject import <key-file> [--project <project-name>] [--key <env-key>]
+enject explain [--check] [--] [command] [args...]
+enject run -- <command> [args...]
+enject <command> [args...]
+enject shell init zsh
+```
+
+## Secret Naming
+
+By default, `enject` uses:
+
+- `service = "com.github.neolee.enject"`
+- `account = "<canonicalized_env_name>"`
+
+Examples:
+
+- `OPENAI_API_KEY` -> `openai_api_key`
+- `DATABASE_URL` -> `database_url`
+
+Project-scoped secrets use:
+
+- `account = "<project>/<canonicalized_env_name>"`
+
+Example:
+
+```shell
+enject secret put DATABASE_URL --project acme
+```
+
+This stores the secret under:
+
+- `service = "com.github.neolee.enject"`
+- `account = "acme/database_url"`
+
+## Configuration
+
+Global config lives at:
+
+- `~/.config/enject/config.toml`
+
+Project config lives at:
+
+- `.enject`
+
+Example global config:
+
+```toml
+version = 1
+
+[[rules.command]]
+match.argv_prefix = ["codex"]
+inject.global = ["OPENAI_API_KEY"]
+```
+
+Example project config:
+
+```toml
+version = 1
+
+[project]
+name = "acme"
+
+[rules.directory]
+project = ["DATABASE_URL"]
+
+[[rules.command]]
+match.argv_prefix = ["uv", "run", "rag.py"]
+inject.global = ["OPENAI_API_KEY"]
+```
+
+Important notes:
+
+- local `.enject` files must be trusted before they take effect
+- `rules.directory` is only allowed in project-local `.enject`
+- `[bindings]` can override default secret lookup or mirror another environment variable with `env = "OTHER_ENV"`
+
+## Trust
+
+Trust the nearest project config from the current directory:
+
+```shell
+enject trust
+```
+
+Use `enject explain --check -- ...` to confirm that a trusted `.enject` is active and that the required values are present.
+
+## Import Existing Key Files
+
+If you already have a shell-style key file:
+
+```shell
+export OPENAI_API_KEY="sk-..."
+export DATABASE_URL="postgres://..."
+```
+
+You can import it directly:
+
+```shell
+enject import ~/keys
+enject import ~/keys --project acme --key DATABASE_URL
+```
+
+## Built-In Catalog
+
+The built-in command catalog lives in [src/core/catalog.toml](./src/core/catalog.toml), not in hard-coded Zig tables.
+
+Current built-in command defaults include:
 
 - `codex` -> `OPENAI_API_KEY`
 - `claude` -> `ANTHROPIC_API_KEY`
@@ -41,13 +181,17 @@ Current built-in command defaults:
 - `aider` -> common LLM provider keys
 - `goose` -> common LLM provider keys
 
-The built-in command catalog lives in [src/core/catalog.toml](./src/core/catalog.toml), not in hard-coded Zig tables.
+Inspect the exact built-in rules shipped with the binary:
+
+```shell
+enject catalog show
+```
 
 ## Shell Integration
 
-`enject` supports `zsh` shell integration through:
+`enject` currently supports `zsh` shell integration through:
 
-```bash
+```shell
 eval "$(enject shell init zsh)"
 ```
 
@@ -59,7 +203,7 @@ This installs a `preexec` / `precmd` pair that:
 
 Recommended usage:
 
-```bash
+```shell
 eval "$(enject shell init zsh)"
 claude
 codex
@@ -69,9 +213,18 @@ uv run app.py
 Current behavior and limits:
 
 - shell integration is currently implemented only for `zsh`
-- it intentionally skips obviously complex shell command lines such as pipelines and command chains
+- it intentionally skips obviously complex shell command lines such as pipelines, command chains, and grouped shell expressions
 - project `rules.directory` still apply when present in a trusted local `.enject`, but this should be treated as an advanced capability
 - `enject export --shell zsh --phase preexec -- ...` exists as the internal helper used by `shell init zsh`; the recommended public entry point is `shell init zsh`
+
+## Backend Override
+
+For diagnostics or development, you can force a specific Keychain backend:
+
+```shell
+ENJECT_KEYCHAIN_BACKEND=native enject explain --check -- codex
+ENJECT_KEYCHAIN_BACKEND=security_cli enject explain --check -- codex
+```
 
 ## Design Notes
 

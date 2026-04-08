@@ -3,8 +3,8 @@ const support = @import("support.zig");
 
 test "security CLI provider round-trip" {
     const allocator = std.testing.allocator;
-    const store = support.keychain.Store.init(.security_cli, std.testing.io);
-    const target = support.keychain.GenericPasswordTarget{
+    const store = support.store.Store.init(.macos_security_cli, std.testing.io);
+    const target = support.store.Target{
         .service = support.test_service,
         .account = "cli-roundtrip",
     };
@@ -13,8 +13,8 @@ test "security CLI provider round-trip" {
 
 test "native Keychain provider round-trip" {
     const allocator = std.testing.allocator;
-    const store = support.keychain.Store.init(.native, std.testing.io);
-    const target = support.keychain.GenericPasswordTarget{
+    const store = support.store.Store.init(.macos_native, std.testing.io);
+    const target = support.store.Target{
         .service = support.test_service,
         .account = "native-roundtrip",
     };

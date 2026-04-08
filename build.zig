@@ -24,7 +24,7 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
-    linkAppleFrameworks(all_tests.root_module);
+    linkPlatformLibs(all_tests.root_module, target);
 
     const run_all_tests = b.addRunArtifact(all_tests);
     const test_step = b.step("test", "Run all tests");
@@ -40,9 +40,20 @@ pub fn build(b: *std.Build) void {
     addReleaseStep(b, target, .ReleaseFast, "release-fast", "Build and install a ReleaseFast enject binary");
 }
 
-fn linkAppleFrameworks(module: *std.Build.Module) void {
-    module.linkFramework("Security", .{});
-    module.linkFramework("CoreFoundation", .{});
+fn linkPlatformLibs(module: *std.Build.Module, target: std.Build.ResolvedTarget) void {
+    switch (target.result.os.tag) {
+        .macos => {
+            module.linkFramework("Security", .{});
+            module.linkFramework("CoreFoundation", .{});
+        },
+        .linux => {
+            // TODO(platform/linux): link libsecret-1 once the secret_service provider is implemented
+        },
+        .windows => {
+            // TODO(platform/windows): link advapi32 once the wincred provider is implemented
+        },
+        else => {},
+    }
 }
 
 fn addNamedTestStep(
@@ -66,7 +77,7 @@ fn addNamedTestStep(
             },
         }),
     });
-    linkAppleFrameworks(test_artifact.root_module);
+    linkPlatformLibs(test_artifact.root_module, target);
 
     const run_artifact = b.addRunArtifact(test_artifact);
     const step = b.step(step_name, step_description);
@@ -89,7 +100,7 @@ fn addEnjectModule(
         .optimize = optimize,
     });
     enject_mod.addImport("toml", toml_dep.module("toml"));
-    linkAppleFrameworks(enject_mod);
+    linkPlatformLibs(enject_mod, target);
     return enject_mod;
 }
 
@@ -111,7 +122,7 @@ fn addExecutableArtifact(
             },
         }),
     });
-    linkAppleFrameworks(exe.root_module);
+    linkPlatformLibs(exe.root_module, target);
     return exe;
 }
 

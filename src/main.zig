@@ -194,7 +194,7 @@ fn describeError(err: anyerror) []const u8 {
         error.FileNotFound => "file not found",
         error.UnsupportedOperation => "secret ls is not supported with the selected keychain backend",
         error.MissingProjectName => "project-scoped lookup requires [project].name",
-        error.InvalidKeychainBackend => "invalid ENJECT_KEYCHAIN_BACKEND value (expected native or security_cli)",
+        error.InvalidStoreBackend => "invalid ENJECT_KEYCHAIN_BACKEND value (expected macos_native or macos_security_cli)",
         error.NotATerminal => "interactive secret input requires a terminal",
         else => @errorName(err),
     };

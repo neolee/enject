@@ -222,8 +222,8 @@ Current behavior and limits:
 For diagnostics or development, you can force a specific Keychain backend:
 
 ```shell
-ENJECT_KEYCHAIN_BACKEND=native enject explain --check -- codex
-ENJECT_KEYCHAIN_BACKEND=security_cli enject explain --check -- codex
+ENJECT_KEYCHAIN_BACKEND=macos_native enject explain --check -- codex
+ENJECT_KEYCHAIN_BACKEND=macos_security_cli enject explain --check -- codex
 ```
 
 ## Design Notes

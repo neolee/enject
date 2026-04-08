@@ -113,17 +113,17 @@ test "cli renderExportShellPreexec prints zsh exports for resolved values" {
     var env_map = std.process.Environ.Map.init(allocator);
     defer env_map.deinit();
 
-    const store = support.keychain.Store.init(.native, std.testing.io);
-    const target = support.keychain.GenericPasswordTarget{
+    const store = support.store.Store.init(.macos_native, std.testing.io);
+    const target = support.store.Target{
         .service = support.test_service,
         .account = "openai_api_key",
     };
-    store.deleteGenericPassword(allocator, target) catch |err| switch (err) {
+    store.delete(allocator, target) catch |err| switch (err) {
         error.NotFound => {},
         else => return err,
     };
-    defer store.deleteGenericPassword(allocator, target) catch {};
-    try store.writeGenericPassword(allocator, target, "shell-export-value");
+    defer store.delete(allocator, target) catch {};
+    try store.set(allocator, target, "shell-export-value");
 
     var temp_dir = std.testing.tmpDir(.{});
     defer temp_dir.cleanup();
@@ -141,7 +141,7 @@ test "cli renderExportShellPreexec prints zsh exports for resolved values" {
         .global_config_path = null,
         .trust_store_path = trust_store_path,
         .service = support.test_service,
-        .keychain_backend = .native,
+        .store_backend = .macos_native,
     };
 
     var aw: std.Io.Writer.Allocating = .init(allocator);
@@ -152,28 +152,28 @@ test "cli renderExportShellPreexec prints zsh exports for resolved values" {
     try std.testing.expect(std.mem.indexOf(u8, output, "export OPENAI_API_KEY='shell-export-value'") != null);
 }
 
-test "cli resolveKeychainBackend honors ENJECT_KEYCHAIN_BACKEND override" {
+test "cli resolveStoreBackend honors ENJECT_KEYCHAIN_BACKEND override" {
     const allocator = std.testing.allocator;
 
     var env_map = std.process.Environ.Map.init(allocator);
     defer env_map.deinit();
-    try env_map.put("ENJECT_KEYCHAIN_BACKEND", "native");
-    try std.testing.expectEqual(enject.providers.keychain.Backend.native, try cli.resolveKeychainBackend(&env_map));
+    try env_map.put("ENJECT_KEYCHAIN_BACKEND", "macos_native");
+    try std.testing.expectEqual(enject.providers.store.Backend.macos_native, try cli.resolveStoreBackend(&env_map));
 
     var env_map_cli = std.process.Environ.Map.init(allocator);
     defer env_map_cli.deinit();
-    try env_map_cli.put("ENJECT_KEYCHAIN_BACKEND", "security_cli");
-    try std.testing.expectEqual(enject.providers.keychain.Backend.security_cli, try cli.resolveKeychainBackend(&env_map_cli));
+    try env_map_cli.put("ENJECT_KEYCHAIN_BACKEND", "macos_security_cli");
+    try std.testing.expectEqual(enject.providers.store.Backend.macos_security_cli, try cli.resolveStoreBackend(&env_map_cli));
 }
 
-test "cli resolveKeychainBackend rejects invalid override" {
+test "cli resolveStoreBackend rejects invalid override" {
     const allocator = std.testing.allocator;
 
     var env_map = std.process.Environ.Map.init(allocator);
     defer env_map.deinit();
     try env_map.put("ENJECT_KEYCHAIN_BACKEND", "bogus");
 
-    try std.testing.expectError(error.InvalidKeychainBackend, cli.resolveKeychainBackend(&env_map));
+    try std.testing.expectError(error.InvalidStoreBackend, cli.resolveStoreBackend(&env_map));
 }
 
 test "cli trustNearestConfigAlloc trusts nearest project config" {
@@ -360,17 +360,17 @@ test "cli doctor renders secret availability" {
     const trust_store = support.trust.Store.init(trust_store_path, std.testing.io);
     try trust_store.trustConfig(allocator, project_config_path);
 
-    const store = support.keychain.Store.init(.native, std.testing.io);
-    const present_target = support.keychain.GenericPasswordTarget{
+    const store = support.store.Store.init(.macos_native, std.testing.io);
+    const present_target = support.store.Target{
         .service = support.test_service,
         .account = "openai_api_key",
     };
-    store.deleteGenericPassword(allocator, present_target) catch |err| switch (err) {
+    store.delete(allocator, present_target) catch |err| switch (err) {
         error.NotFound => {},
         else => return err,
     };
-    defer store.deleteGenericPassword(allocator, present_target) catch {};
-    try store.writeGenericPassword(allocator, present_target, "doctor-secret");
+    defer store.delete(allocator, present_target) catch {};
+    try store.set(allocator, present_target, "doctor-secret");
 
     const runtime = cli.Runtime{
         .io = std.testing.io,
@@ -379,7 +379,7 @@ test "cli doctor renders secret availability" {
         .global_config_path = global_config_path,
         .trust_store_path = trust_store_path,
         .service = support.test_service,
-        .keychain_backend = .native,
+        .store_backend = .macos_native,
     };
 
     var doctor_data = try cli.doctorAlloc(allocator, runtime, &.{"codex"});
@@ -390,7 +390,7 @@ test "cli doctor renders secret availability" {
     try cli.renderDoctor(&aw.writer, &doctor_data);
 
     const output = aw.written();
-    try std.testing.expect(std.mem.indexOf(u8, output, "Backend: native") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Backend: macos_native") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "OPENAI_API_KEY") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "DATABASE_URL") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "present") != null);
@@ -428,17 +428,17 @@ test "cli runCommand injects resolved environment into child process" {
     const trust_store_path = try std.fs.path.join(allocator, &.{ root_path, "trust.tsv" });
     defer allocator.free(trust_store_path);
 
-    const store = support.keychain.Store.init(.native, std.testing.io);
-    const target = support.keychain.GenericPasswordTarget{
+    const store = support.store.Store.init(.macos_native, std.testing.io);
+    const target = support.store.Target{
         .service = support.test_service,
         .account = "openai_api_key",
     };
-    store.deleteGenericPassword(allocator, target) catch |err| switch (err) {
+    store.delete(allocator, target) catch |err| switch (err) {
         error.NotFound => {},
         else => return err,
     };
-    defer store.deleteGenericPassword(allocator, target) catch {};
-    try store.writeGenericPassword(allocator, target, "cli-injected-secret");
+    defer store.delete(allocator, target) catch {};
+    try store.set(allocator, target, "cli-injected-secret");
 
     const runtime = cli.Runtime{
         .io = std.testing.io,
@@ -447,7 +447,7 @@ test "cli runCommand injects resolved environment into child process" {
         .global_config_path = global_config_path,
         .trust_store_path = trust_store_path,
         .service = support.test_service,
-        .keychain_backend = .native,
+        .store_backend = .macos_native,
     };
 
     var warning_writer: std.Io.Writer.Allocating = .init(allocator);
@@ -499,7 +499,7 @@ test "cli runCommand skips missing secrets and still runs child process" {
         .global_config_path = global_config_path,
         .trust_store_path = trust_store_path,
         .service = support.test_service,
-        .keychain_backend = .native,
+        .store_backend = .macos_native,
     };
 
     var warning_writer: std.Io.Writer.Allocating = .init(allocator);
@@ -549,17 +549,17 @@ test "cli runCommand supports env alias bindings" {
     const trust_store_path = try std.fs.path.join(allocator, &.{ root_path, "trust.tsv" });
     defer allocator.free(trust_store_path);
 
-    const store = support.keychain.Store.init(.native, std.testing.io);
-    const target = support.keychain.GenericPasswordTarget{
+    const store = support.store.Store.init(.macos_native, std.testing.io);
+    const target = support.store.Target{
         .service = support.test_service,
         .account = "openai_api_key",
     };
-    store.deleteGenericPassword(allocator, target) catch |err| switch (err) {
+    store.delete(allocator, target) catch |err| switch (err) {
         error.NotFound => {},
         else => return err,
     };
-    defer store.deleteGenericPassword(allocator, target) catch {};
-    try store.writeGenericPassword(allocator, target, "cli-injected-secret");
+    defer store.delete(allocator, target) catch {};
+    try store.set(allocator, target, "cli-injected-secret");
 
     const runtime = cli.Runtime{
         .io = std.testing.io,
@@ -568,7 +568,7 @@ test "cli runCommand supports env alias bindings" {
         .global_config_path = global_config_path,
         .trust_store_path = trust_store_path,
         .service = support.test_service,
-        .keychain_backend = .native,
+        .store_backend = .macos_native,
     };
 
     var warning_writer: std.Io.Writer.Allocating = .init(allocator);
@@ -620,7 +620,7 @@ test "cli runCommand prints missing value warnings in verbose mode" {
         .global_config_path = global_config_path,
         .trust_store_path = trust_store_path,
         .service = support.test_service,
-        .keychain_backend = .native,
+        .store_backend = .macos_native,
     };
 
     var warning_writer: std.Io.Writer.Allocating = .init(allocator);
@@ -712,8 +712,8 @@ test "cli secret put and rm support project-scoped accounts" {
     defer allocator.free(account);
     try std.testing.expectEqualStrings("acme/database_url", account);
 
-    const store = support.keychain.Store.init(.native, std.testing.io);
-    const loaded = try store.readGenericPasswordAlloc(allocator, .{
+    const store = support.store.Store.init(.macos_native, std.testing.io);
+    const loaded = try store.getAlloc(allocator, .{
         .service = runtime.service,
         .account = "acme/database_url",
     });
@@ -771,13 +771,13 @@ test "cli importSecretsAlloc imports global and project scoped secrets" {
     try std.testing.expectEqualStrings("DATABASE_URL", imported[0].env_name);
     try std.testing.expectEqualStrings("acme/database_url", imported[0].account);
 
-    const store = support.keychain.Store.init(.native, std.testing.io);
-    defer store.deleteGenericPassword(allocator, .{
+    const store = support.store.Store.init(.macos_native, std.testing.io);
+    defer store.delete(allocator, .{
         .service = runtime.service,
         .account = "acme/database_url",
     }) catch {};
 
-    const loaded = try store.readGenericPasswordAlloc(allocator, .{
+    const loaded = try store.getAlloc(allocator, .{
         .service = runtime.service,
         .account = "acme/database_url",
     });
@@ -805,7 +805,7 @@ test "cli listSecretsAlloc reports unsupported operation for security_cli backen
         .global_config_path = null,
         .trust_store_path = trust_store_path,
         .service = "com.github.neolee.enject.tests.cli",
-        .keychain_backend = .security_cli,
+        .store_backend = .macos_security_cli,
     };
 
     try std.testing.expectError(error.UnsupportedOperation, cli.listSecretsAlloc(allocator, runtime));

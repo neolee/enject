@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub fn writeGenericPassword(
+pub fn set(
     allocator: std.mem.Allocator,
     io: std.Io,
     service: []const u8,
@@ -22,7 +22,7 @@ pub fn writeGenericPassword(
     try expectSuccess(result);
 }
 
-pub fn readGenericPasswordAlloc(
+pub fn getAlloc(
     allocator: std.mem.Allocator,
     io: std.Io,
     service: []const u8,
@@ -47,7 +47,7 @@ pub fn readGenericPasswordAlloc(
     return allocator.dupe(u8, std.mem.trimEnd(u8, result.stdout, "\r\n"));
 }
 
-pub fn deleteGenericPassword(
+pub fn delete(
     allocator: std.mem.Allocator,
     io: std.Io,
     service: []const u8,

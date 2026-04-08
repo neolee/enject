@@ -2,30 +2,30 @@ const std = @import("std");
 const enject = @import("enject");
 
 pub const test_service = "com.github.neolee.enject.tests";
-pub const keychain = enject.providers.keychain;
+pub const store = enject.providers.store;
 pub const resolver = enject.core.resolver;
 pub const trust = enject.trust.store;
 
 pub fn expectRoundTrip(
-    store: keychain.Store,
+    secret_store: store.Store,
     allocator: std.mem.Allocator,
-    target: keychain.GenericPasswordTarget,
+    target: store.Target,
     expected_value: []const u8,
 ) !void {
-    store.deleteGenericPassword(allocator, target) catch |err| switch (err) {
+    secret_store.delete(allocator, target) catch |err| switch (err) {
         error.NotFound => {},
         else => return err,
     };
 
-    try store.writeGenericPassword(allocator, target, expected_value);
+    try secret_store.set(allocator, target, expected_value);
 
-    const loaded = try store.readGenericPasswordAlloc(allocator, target);
+    const loaded = try secret_store.getAlloc(allocator, target);
     defer allocator.free(loaded);
 
     try std.testing.expectEqualStrings(expected_value, loaded);
 
-    try store.deleteGenericPassword(allocator, target);
-    _ = store.readGenericPasswordAlloc(allocator, target) catch |err| switch (err) {
+    try secret_store.delete(allocator, target);
+    _ = secret_store.getAlloc(allocator, target) catch |err| switch (err) {
         error.NotFound => return,
         else => return err,
     };

@@ -2,7 +2,7 @@ const builtin = @import("builtin");
 const std = @import("std");
 const catalog = @import("../core/catalog.zig");
 const resolver = @import("../core/resolver.zig");
-const keychain = @import("../providers/keychain.zig");
+const secure_store = @import("../providers/store.zig");
 const trust = @import("../trust/store.zig");
 
 pub const Runtime = struct {
@@ -12,7 +12,7 @@ pub const Runtime = struct {
     global_config_path: ?[]const u8,
     trust_store_path: []const u8,
     service: []const u8 = resolver.default_service,
-    keychain_backend: keychain.Backend = defaultKeychainBackend(),
+    store_backend: secure_store.Backend = defaultStoreBackend(),
 };
 
 pub const ParsedCommand = union(enum) {
@@ -34,6 +34,9 @@ pub const ExplainCommand = struct {
 
 pub const ShellKind = enum {
     zsh,
+    // TODO(platform/linux): bash  -- preexec emulation via DEBUG trap
+    // TODO(platform/linux): fish  -- native fish_preexec event
+    // TODO(platform/windows): pwsh -- PreCommandLookupAction hook
 };
 
 pub const ShellPhase = enum {
@@ -106,7 +109,7 @@ pub const DoctorData = struct {
     command_argv: []const []const u8,
     cwd_path: []const u8,
     global_config_path: ?[]const u8,
-    keychain_backend: keychain.Backend,
+    store_backend: secure_store.Backend,
     context: resolver.LoadedContext,
     resolution: resolver.Resolution,
     binding_statuses: []DoctorBindingStatus,
@@ -158,7 +161,7 @@ pub fn defaultRuntimeAlloc(allocator: std.mem.Allocator, init: std.process.Init)
     const trust_store_path = try std.fs.path.join(allocator, &.{ config_dir, "trust.tsv" });
     errdefer allocator.free(trust_store_path);
 
-    const keychain_backend = try resolveKeychainBackend(init.environ_map);
+    const store_backend = try resolveStoreBackend(init.environ_map);
 
     return .{
         .io = init.io,
@@ -166,7 +169,7 @@ pub fn defaultRuntimeAlloc(allocator: std.mem.Allocator, init: std.process.Init)
         .cwd_path = cwd_path,
         .global_config_path = global_config_path,
         .trust_store_path = trust_store_path,
-        .keychain_backend = keychain_backend,
+        .store_backend = store_backend,
     };
 }
 
@@ -321,7 +324,7 @@ pub fn doctorAlloc(
         .command_argv = command_argv,
         .cwd_path = runtime.cwd_path,
         .global_config_path = runtime.global_config_path,
-        .keychain_backend = runtime.keychain_backend,
+        .store_backend = runtime.store_backend,
         .context = context,
         .resolution = resolution,
         .binding_statuses = binding_statuses,
@@ -338,8 +341,8 @@ pub fn putSecret(
     const account = try accountFromEnvNameAlloc(allocator, name, project_name);
     errdefer allocator.free(account);
 
-    const store = keychain.Store.init(runtime.keychain_backend, runtime.io);
-    try store.writeGenericPassword(allocator, .{
+    const secret_store = secure_store.Store.init(runtime.store_backend, runtime.io);
+    try secret_store.set(allocator, .{
         .service = runtime.service,
         .account = account,
     }, value);
@@ -356,8 +359,8 @@ pub fn removeSecret(
     const account = try accountFromEnvNameAlloc(allocator, name, project_name);
     errdefer allocator.free(account);
 
-    const store = keychain.Store.init(runtime.keychain_backend, runtime.io);
-    try store.deleteGenericPassword(allocator, .{
+    const secret_store = secure_store.Store.init(runtime.store_backend, runtime.io);
+    try secret_store.delete(allocator, .{
         .service = runtime.service,
         .account = account,
     });
@@ -369,8 +372,8 @@ pub fn listSecretsAlloc(
     allocator: std.mem.Allocator,
     runtime: Runtime,
 ) ![][]u8 {
-    const store = keychain.Store.init(runtime.keychain_backend, runtime.io);
-    return store.listGenericPasswordAccountsAlloc(allocator, runtime.service);
+    const secret_store = secure_store.Store.init(runtime.store_backend, runtime.io);
+    return secret_store.listAccountsAlloc(allocator, runtime.service);
 }
 
 pub fn importSecretsAlloc(
@@ -400,8 +403,8 @@ pub fn importSecretsAlloc(
         const account = try accountFromEnvNameAlloc(allocator, parsed.env_name, command.project_name);
         errdefer allocator.free(account);
 
-        const store = keychain.Store.init(runtime.keychain_backend, runtime.io);
-        try store.writeGenericPassword(allocator, .{
+        const secret_store = secure_store.Store.init(runtime.store_backend, runtime.io);
+        try secret_store.set(allocator, .{
             .service = runtime.service,
             .account = account,
         }, parsed.value);
@@ -527,7 +530,7 @@ pub fn renderExplain(writer: anytype, data: *const ExplainData) !void {
 }
 
 pub fn renderDoctor(writer: anytype, data: *const DoctorData) !void {
-    try writer.print("Backend: {s}\n", .{backendName(data.keychain_backend)});
+    try writer.print("Backend: {s}\n", .{backendName(data.store_backend)});
     if (data.command_argv.len == 0) {
         try writer.print("Command: none (directory-scoped rules only)\n", .{});
     } else {
@@ -651,8 +654,9 @@ pub fn renderShellInit(writer: anytype, program_path: []const u8) !void {
         \\  esac
         \\
         \\  export_file=$(command mktemp /tmp/enject-preexec.XXXXXX) || return
-        \\  if command 
+        \\  if command
     );
+    try writer.writeByte(' ');
     try writeZshSingleQuoted(writer, program_path);
     try writer.writeAll(
         \\ export --shell zsh --phase preexec -- "${(@z)raw_command}" >| "$export_file"; then
@@ -904,27 +908,36 @@ fn defaultConfigDirAlloc(
     if (environ_map.get("HOME")) |home| {
         return std.fs.path.join(allocator, &.{ home, ".config", "enject" });
     }
+    // TODO(platform/windows): APPDATA is the conventional config root on Windows
+    if (environ_map.get("APPDATA")) |app_data| {
+        return std.fs.path.join(allocator, &.{ app_data, "enject" });
+    }
     return error.MissingHomeDirectory;
 }
 
-pub fn resolveKeychainBackend(environ_map: *std.process.Environ.Map) !keychain.Backend {
-    const override = environ_map.get("ENJECT_KEYCHAIN_BACKEND") orelse return defaultKeychainBackend();
-    if (std.mem.eql(u8, override, "native")) return .native;
-    if (std.mem.eql(u8, override, "security_cli")) return .security_cli;
-    return error.InvalidKeychainBackend;
+pub fn resolveStoreBackend(environ_map: *std.process.Environ.Map) !secure_store.Backend {
+    const override = environ_map.get("ENJECT_KEYCHAIN_BACKEND") orelse return defaultStoreBackend();
+    if (std.mem.eql(u8, override, "macos_native")) return .macos_native;
+    if (std.mem.eql(u8, override, "macos_security_cli")) return .macos_security_cli;
+    return error.InvalidStoreBackend;
 }
 
-fn defaultKeychainBackend() keychain.Backend {
+fn defaultStoreBackend() secure_store.Backend {
     return switch (builtin.os.tag) {
-        .macos => .native,
-        else => .security_cli,
+        .macos => .macos_native,
+        // TODO(platform/linux): return the appropriate Linux backend once implemented
+        // TODO(platform/windows): return .windows_wincred once implemented
+        else => @compileError(
+            "no default secret store backend for this OS; " ++
+                "add a provider implementation in src/providers/ and update defaultStoreBackend()",
+        ),
     };
 }
 
-fn backendName(backend: keychain.Backend) []const u8 {
+fn backendName(backend: secure_store.Backend) []const u8 {
     return switch (backend) {
-        .native => "native",
-        .security_cli => "security_cli",
+        .macos_native => "macos_native",
+        .macos_security_cli => "macos_security_cli",
     };
 }
 
@@ -1002,8 +1015,8 @@ fn resolveSecretValueAlloc(
     runtime: Runtime,
     secret: resolver.ResolvedBinding.SecretRef,
 ) anyerror![]u8 {
-    const store = keychain.Store.init(runtime.keychain_backend, runtime.io);
-    return store.readGenericPasswordAlloc(allocator, .{
+    const secret_store = secure_store.Store.init(runtime.store_backend, runtime.io);
+    return secret_store.getAlloc(allocator, .{
         .service = secret.service,
         .account = secret.account,
     });

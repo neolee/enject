@@ -93,7 +93,7 @@ extern const kSecMatchLimitAll: CFTypeRef;
 extern const kSecReturnAttributes: CFTypeRef;
 extern const kCFBooleanTrue: CFTypeRef;
 
-pub fn writeGenericPassword(service: []const u8, account: []const u8, value: []const u8) !void {
+pub fn set(service: []const u8, account: []const u8, value: []const u8) !void {
     const status = SecKeychainAddGenericPassword(
         null,
         try toU32(service.len),
@@ -122,7 +122,7 @@ pub fn writeGenericPassword(service: []const u8, account: []const u8, value: []c
     }
 }
 
-pub fn readGenericPasswordAlloc(
+pub fn getAlloc(
     allocator: std.mem.Allocator,
     service: []const u8,
     account: []const u8,
@@ -155,13 +155,13 @@ pub fn readGenericPasswordAlloc(
     return allocator.dupe(u8, bytes_ptr[0..password_len]);
 }
 
-pub fn deleteGenericPassword(service: []const u8, account: []const u8) !void {
+pub fn delete(service: []const u8, account: []const u8) !void {
     const item = try findItem(service, account);
     defer CFRelease(item);
     try checkStatus(SecKeychainItemDelete(item));
 }
 
-pub fn listGenericPasswordAccountsAlloc(
+pub fn listAccountsAlloc(
     allocator: std.mem.Allocator,
     service: []const u8,
 ) ![][]u8 {

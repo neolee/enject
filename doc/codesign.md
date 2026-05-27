@@ -180,6 +180,75 @@ Distribution outside the developer machine may also require notarization. Treat
 notarization as a release concern, not a requirement for local Keychain
 development.
 
+## Prebuilt Binary Distribution
+
+Prebuilt macOS binaries should use distribution signing, not the local
+`Apple Development` identity.
+
+Use a `Developer ID Application` identity:
+
+```shell
+zig build release-safe
+
+codesign --force \
+  --sign "Developer ID Application: Neo Lee (yyyyyy)" \
+  --timestamp \
+  --options runtime \
+  --identifier net.paradigmx.enject \
+  zig-out/bin/enject
+```
+
+Validate the signed executable:
+
+```shell
+codesign --verify --strict --verbose=4 zig-out/bin/enject
+codesign -dvvv zig-out/bin/enject
+spctl -a -vv -t exec zig-out/bin/enject
+```
+
+For a simple release artifact:
+
+```shell
+ditto -c -k --keepParent zig-out/bin/enject enject-macos-arm64.zip
+```
+
+Submit the archive for notarization:
+
+```shell
+xcrun notarytool submit enject-macos-arm64.zip \
+  --keychain-profile "notarytool-profile" \
+  --wait
+```
+
+For a more polished installer, package the binary into a signed and notarized
+`.pkg`. A `.pkg` can be stapled after notarization:
+
+```shell
+pkgbuild \
+  --identifier net.paradigmx.enject \
+  --version 0.1.0 \
+  --install-location /usr/local/bin \
+  --root pkg-root \
+  enject-macos-arm64.pkg
+
+xcrun notarytool submit enject-macos-arm64.pkg \
+  --keychain-profile "notarytool-profile" \
+  --wait
+
+xcrun stapler staple enject-macos-arm64.pkg
+```
+
+Recommended release artifacts:
+
+- signed and notarized macOS binary or installer
+- checksum file
+- exact version and target architecture
+- release notes that mention the signing identifier
+
+This project does not currently require prebuilt binary distribution. Local
+development can use `zig build -Dcodesign=true release-safe` with an
+`Apple Development` identity.
+
 ## Troubleshooting
 
 ### Build Fails With Missing Identity

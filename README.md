@@ -11,7 +11,44 @@ zig build
 ./zig-out/bin/enject --help
 ```
 
-For local daily use, make the built binary available on your `PATH`.
+For local daily use on macOS, sign the binary with a stable Apple Development
+identity before using it with Keychain. Unsigned or ad-hoc signed rebuilds can
+make Keychain ask for access again.
+
+Find a local signing identity:
+
+```shell
+security find-identity -p codesigning -v
+```
+
+Then build with signing enabled:
+
+```shell
+export ENJECT_CODESIGN_IDENTITY="Apple Development: Your Name (TEAMID)"
+zig build -Dcodesign=true
+```
+
+For the normal optimized local build, combine signing with the release-safe
+step:
+
+```shell
+export ENJECT_CODESIGN_IDENTITY="Apple Development: Your Name (TEAMID)"
+zig build -Dcodesign=true release-safe
+```
+
+The default signing identifier is:
+
+```text
+net.paradigmx.enject
+```
+
+The `-Dcodesign=true` option is macOS-only. Future non-macOS secret store
+backends may need different platform-specific signing or trust setup.
+
+See [Code Signing for Keychain Development](./doc/codesign.md) for the full
+workflow and verification steps.
+
+For daily use, make the signed binary available on your `PATH`.
 
 Convenient release-oriented build steps are also available:
 

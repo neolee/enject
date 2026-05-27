@@ -5,4 +5,3 @@ name = "enject"
 
 [rules.directory]
 global = ["OPENAI_API_KEY", "XXX_API_KEY"]
-project = ["ENJECT_KEYCHAIN_BACKEND"]

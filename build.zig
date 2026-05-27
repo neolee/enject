@@ -3,9 +3,10 @@ const std = @import("std");
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const codesign = resolveCodesignOptions(b, target);
     const enject_mod = addEnjectModule(b, target, optimize);
     const exe = addExecutableArtifact(b, target, optimize, enject_mod, "enject");
-    b.installArtifact(exe);
+    b.getInstallStep().dependOn(installExecutableArtifact(b, exe, "enject", codesign));
 
     const run_step = b.step("run", "Run the enject CLI");
     const run_cmd = b.addRunArtifact(exe);
@@ -36,8 +37,40 @@ pub fn build(b: *std.Build) void {
     addNamedTestStep(b, target, optimize, enject_mod, "test-resolver", "Run resolver tests", "all-tests-resolver", "test/resolver_test.zig");
     addNamedTestStep(b, target, optimize, enject_mod, "test-cli", "Run CLI tests", "all-tests-cli", "test/cli_test.zig");
 
-    addReleaseStep(b, target, .ReleaseSafe, "release-safe", "Build and install a ReleaseSafe enject binary");
-    addReleaseStep(b, target, .ReleaseFast, "release-fast", "Build and install a ReleaseFast enject binary");
+    addReleaseStep(b, target, .ReleaseSafe, codesign, "release-safe", "Build and install a ReleaseSafe enject binary");
+    addReleaseStep(b, target, .ReleaseFast, codesign, "release-fast", "Build and install a ReleaseFast enject binary");
+}
+
+const CodesignOptions = struct {
+    enabled: bool,
+    identity: ?[]const u8,
+    identifier: []const u8,
+};
+
+fn resolveCodesignOptions(b: *std.Build, target: std.Build.ResolvedTarget) CodesignOptions {
+    const enabled = b.option(bool, "codesign", "Sign the installed enject binary with macOS codesign") orelse false;
+    const identity = b.option([]const u8, "codesign-identity", "macOS code signing identity") orelse
+        getEnvVar(b, "ENJECT_CODESIGN_IDENTITY");
+    const identifier = b.option([]const u8, "codesign-identifier", "macOS code signing identifier") orelse
+        getEnvVar(b, "ENJECT_CODESIGN_IDENTIFIER") orelse
+        "net.paradigmx.enject";
+
+    if (enabled and identity == null) {
+        @panic("codesign requested but no identity was provided; set ENJECT_CODESIGN_IDENTITY or pass -Dcodesign-identity");
+    }
+    if (enabled and target.result.os.tag != .macos) {
+        @panic("codesign requested for a non-macOS target");
+    }
+
+    return .{
+        .enabled = enabled,
+        .identity = identity,
+        .identifier = identifier,
+    };
+}
+
+fn getEnvVar(b: *std.Build, name: []const u8) ?[]const u8 {
+    return b.graph.environ_map.get(name);
 }
 
 fn linkPlatformLibs(module: *std.Build.Module, target: std.Build.ResolvedTarget) void {
@@ -126,16 +159,40 @@ fn addExecutableArtifact(
     return exe;
 }
 
+fn installExecutableArtifact(
+    b: *std.Build,
+    exe: *std.Build.Step.Compile,
+    name: []const u8,
+    codesign: CodesignOptions,
+) *std.Build.Step {
+    const install = b.addInstallArtifact(exe, .{});
+    if (!codesign.enabled) return &install.step;
+
+    const installed_path = b.getInstallPath(.bin, name);
+    const sign = b.addSystemCommand(&.{
+        "codesign",
+        "--force",
+        "--sign",
+        codesign.identity.?,
+        "--timestamp=none",
+        "--identifier",
+        codesign.identifier,
+        installed_path,
+    });
+    sign.step.dependOn(&install.step);
+    return &sign.step;
+}
+
 fn addReleaseStep(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
+    codesign: CodesignOptions,
     step_name: []const u8,
     step_description: []const u8,
 ) void {
     const enject_mod = addEnjectModule(b, target, optimize);
     const exe = addExecutableArtifact(b, target, optimize, enject_mod, "enject");
-    const install = b.addInstallArtifact(exe, .{});
     const step = b.step(step_name, step_description);
-    step.dependOn(&install.step);
+    step.dependOn(installExecutableArtifact(b, exe, "enject", codesign));
 }

@@ -1,98 +1,77 @@
 # Code Signing for Keychain Development
 
 `enject` reads macOS Keychain generic password items. During local development,
-unsigned or ad-hoc signed binaries are a poor fit for Keychain access control:
-each rebuild can produce a different code identity, so Keychain may treat the
-new binary as a different client.
+ad-hoc signed rebuilds can look like different clients to Keychain, causing
+repeated access prompts.
 
-Use a stable code signing identity for local builds to keep Keychain
-authorization stable across rebuilds.
+Use a stable macOS code signing identity for local builds.
 
-## Goal
+## Choose an Identity
 
-After this setup:
-
-- rebuilt `enject` binaries use the same signing identity
-- Keychain does not request access again for the same item after every rebuild
-- development builds can still use `zig build`
-- release builds can later use a distribution identity
-
-## Inspect Current Signing State
-
-Build the binary:
-
-```shell
-zig build
-```
-
-Inspect the resulting executable:
-
-```shell
-codesign -dvvv --entitlements :- zig-out/bin/enject
-```
-
-If the output contains `Signature=adhoc` or `flags=adhoc`, Keychain may not
-treat future rebuilds as the same trusted client.
-
-Check available signing identities:
+List valid code signing identities:
 
 ```shell
 security find-identity -p codesigning -v
 ```
 
-For local development, an `Apple Development` identity is enough.
+For local development, use an `Apple Development` identity:
 
-## Create or Select an Identity
-
-If you already have an Apple Developer account configured in Xcode, use the
-`Apple Development: ...` identity reported by:
-
-```shell
-security find-identity -p codesigning -v
+```text
+Apple Development: Neo Lee (xxxxxx)
 ```
 
-If no valid identities are listed, create or download one through Xcode:
+`codesign --sign` accepts either the full identity name or the SHA-1 hash shown
+by `security find-identity -p codesigning -v`. The identity name and Team ID are
+not signing secrets, but the SHA-1 hash exposes less personal information in
+local shell config.
 
-1. Open Xcode.
-2. Open `Settings`.
-3. Select `Accounts`.
-4. Add or select the Apple Developer account.
-5. Select the team.
-6. Use `Manage Certificates...`.
-7. Create an `Apple Development` certificate if one does not exist.
+Reserve `Developer ID Application` for release builds distributed outside the
+developer machine.
 
-Then run `security find-identity -p codesigning -v` again and copy the exact
-identity name or SHA-1 hash.
+## Signed Local Build
 
-## Sign a Local Build Manually
+Set the local signing identity. Use either the identity name:
 
-Build first:
+```shell
+export ENJECT_CODESIGN_IDENTITY="Apple Development: Neo Lee (xxxxxx)"
+```
+
+or the identity hash:
+
+```shell
+export ENJECT_CODESIGN_IDENTITY="0123456789ABCDEF0123456789ABCDEF01234567"
+```
+
+Best practice: keep this value in a private local environment file that is not
+committed or publicly synced, then source that file before building.
+
+Build and sign the installed binary:
+
+```shell
+zig build -Dcodesign=true
+```
+
+## Inspect Existing Signing State
+
+If the binary was built without `-Dcodesign=true`, inspect it before using it
+with Keychain:
 
 ```shell
 zig build
+codesign -dvvv zig-out/bin/enject
 ```
 
-Sign the executable with a stable identifier:
+If the output contains `Signature=adhoc` or `flags=adhoc`, Keychain may treat
+future rebuilds as different clients. Rebuild with stable signing enabled:
 
 ```shell
-codesign --force \
-  --sign "Apple Development: Your Name (TEAMID)" \
-  --timestamp=none \
-  --identifier net.paradigmx.enject \
-  zig-out/bin/enject
+zig build -Dcodesign=true
 ```
 
-Notes:
-
-- Replace the signing identity with the exact identity on the machine.
-- Keep `--identifier net.paradigmx.enject` stable.
-- `--timestamp=none` is appropriate for local development builds.
-- Do not use `--deep`; this is a single executable, not an app bundle.
-
-Verify:
+Inspect again:
 
 ```shell
-codesign -dvvv --entitlements :- zig-out/bin/enject
+codesign -dvvv zig-out/bin/enject
 ```
 
 Expected properties:
@@ -102,68 +81,96 @@ Expected properties:
 - `Identifier=net.paradigmx.enject`
 - `TeamIdentifier` is set
 
-## Validate Keychain Behavior
+By default, the build uses this signing identifier:
 
-Use a test secret:
-
-```shell
-./zig-out/bin/enject secret put ENJECT_CODESIGN_TEST --value test-value
-./zig-out/bin/enject doctor -- env
+```text
+net.paradigmx.enject
 ```
 
-Then rebuild and sign again:
+Override it only if the project intentionally changes its code identity:
+
+```shell
+export ENJECT_CODESIGN_IDENTIFIER="net.paradigmx.enject"
+zig build -Dcodesign=true
+```
+
+The same values can also be passed directly:
+
+```shell
+zig build \
+  -Dcodesign=true \
+  -Dcodesign-identity="Apple Development: Neo Lee (xxxxxx)" \
+  -Dcodesign-identifier="net.paradigmx.enject"
+```
+
+## Inspect a Signed Binary
+
+Check the installed executable:
+
+```shell
+codesign -dvvv zig-out/bin/enject
+```
+
+Expected properties:
+
+- `Signature` is not `adhoc`
+- `Authority` shows the selected Apple Development certificate
+- `Identifier=net.paradigmx.enject`
+- `TeamIdentifier` is set
+
+## Verify Keychain Behavior
+
+Use a command that reads one existing secret. `codex` is a good test target
+because the built-in catalog maps it to `OPENAI_API_KEY`.
+
+```shell
+./zig-out/bin/enject doctor -- codex
+```
+
+On the first access with the stable signed binary, Keychain may prompt for old
+items created by an ad-hoc signed binary. Select `Always Allow`.
+
+Run the same command again:
+
+```shell
+./zig-out/bin/enject doctor -- codex
+```
+
+It should not prompt.
+
+Rebuild and sign again with the same identity and identifier:
+
+```shell
+zig build -Dcodesign=true
+./zig-out/bin/enject doctor -- codex
+```
+
+It should still not prompt. This confirms that Keychain authorization survives
+rebuilds when the binary is signed with a stable identity.
+
+## Manual Signing
+
+The build option above is preferred. Manual signing is useful for debugging:
 
 ```shell
 zig build
 codesign --force \
-  --sign "Apple Development: Your Name (TEAMID)" \
+  --sign "Apple Development: Neo Lee (xxxxxx)" \
   --timestamp=none \
   --identifier net.paradigmx.enject \
   zig-out/bin/enject
 ```
 
-Run a command that reads the same secret again.
-
-If Keychain prompts, select `Always Allow` for the signed `enject` binary.
-After that, another rebuild signed with the same identity and identifier should
-not trigger a new prompt for the same Keychain item.
-
-## Expected Migration Behavior
-
-Existing Keychain items may have been created or authorized by an older ad-hoc
-signed `enject` binary. When the stable signed binary first reads those items,
-macOS may prompt once per item because the stored access control list still
-references the old client identity.
-
-That is expected during migration. The important property is that prompts should
-not repeat after future rebuilds signed with the same identity and identifier.
-
-## Development Build Integration
-
-A future `build.zig` change should make signing optional and reproducible:
-
-```shell
-zig build \
-  -Dcodesign-identity="Apple Development: Your Name (TEAMID)" \
-  -Dcodesign-identifier="net.paradigmx.enject"
-```
-
-Recommended behavior for that build option:
-
-- no signing by default
-- sign only the installed executable when `-Dcodesign-identity` is provided
-- default the identifier to `net.paradigmx.enject`
-- fail clearly if `codesign` fails
-- keep test artifacts unsigned unless explicitly needed
+If `zig build` is run again without `-Dcodesign=true`, it may replace
+`zig-out/bin/enject` with an ad-hoc signed binary. Sign after building.
 
 ## Release Signing
 
-For a distributed CLI, use a `Developer ID Application` identity instead of an
-`Apple Development` identity:
+For a distributed CLI, use a `Developer ID Application` identity and timestamp:
 
 ```shell
 codesign --force \
-  --sign "Developer ID Application: Your Name (TEAMID)" \
+  --sign "Developer ID Application: Neo Lee (yyyyyy)" \
   --timestamp \
   --identifier net.paradigmx.enject \
   zig-out/bin/enject
@@ -175,12 +182,22 @@ development.
 
 ## Troubleshooting
 
-### Keychain still prompts after every rebuild
+### Build Fails With Missing Identity
 
-Check that all rebuilds use the same identity and identifier:
+If `zig build -Dcodesign=true` fails because no identity was provided, set:
 
 ```shell
-codesign -dvvv --entitlements :- zig-out/bin/enject
+export ENJECT_CODESIGN_IDENTITY="Apple Development: Neo Lee (xxxxxx)"
+```
+
+or pass `-Dcodesign-identity=...` directly.
+
+### Keychain Still Prompts After Every Rebuild
+
+Check that every build is signed with the same identity and identifier:
+
+```shell
+codesign -dvvv zig-out/bin/enject
 ```
 
 Look for changes in:
@@ -190,18 +207,7 @@ Look for changes in:
 - signing `Authority`
 - `Signature=adhoc`
 
-### No valid signing identities
-
-Run:
-
-```shell
-security find-identity -p codesigning -v
-```
-
-If it reports zero valid identities, create or download an Apple Development
-certificate through Xcode.
-
-### Old items still prompt once
+### Old Items Prompt Once
 
 This is expected for items created under an older ad-hoc identity. Select
 `Always Allow` for the stable signed binary. Future rebuilds using the same

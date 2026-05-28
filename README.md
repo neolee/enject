@@ -2,7 +2,7 @@
 
 `enject` is a developer tool for injecting environment variables into child processes using secrets from secure storage.
 
-The initial target platform is macOS, with macOS Keychain as the first secret backend and Zig as the implementation language.
+> The initial target platform is macOS, with macOS Keychain as the first secret backend and Zig as the implementation language.
 
 ## Build
 
@@ -11,11 +11,22 @@ zig build
 ./zig-out/bin/enject --help
 ```
 
-For local daily use on macOS, sign the binary with a stable Apple Development
-identity before using it with Keychain. Unsigned or ad-hoc signed rebuilds can
-make Keychain ask for access again.
+Convenient release-oriented build steps are also available:
 
-Find a local signing identity:
+```shell
+zig build release-safe
+zig build release-fast
+```
+
+> The `release-safe` build is the recommended default for distribution.
+
+For daily use, make the signed binary available on your `PATH`.
+
+### Code Signing
+
+For local daily use on macOS, sign the binary with a stable Apple Development identity before using it with Keychain. Unsigned or ad-hoc signed rebuilds can make Keychain ask for access again.
+
+First find a local signing identity on your Mac:
 
 ```shell
 security find-identity -p codesigning -v
@@ -28,40 +39,9 @@ export ENJECT_CODESIGN_IDENTITY="Apple Development: Your Name (TEAMID)"
 zig build -Dcodesign=true
 ```
 
-For the normal optimized local build, combine signing with the release-safe
-step:
+This will sign the binary with the specified identity and identifier `net.paradigmx.enject`.
 
-```shell
-export ENJECT_CODESIGN_IDENTITY="Apple Development: Your Name (TEAMID)"
-zig build -Dcodesign=true release-safe
-```
-
-The default signing identifier is:
-
-```text
-net.paradigmx.enject
-```
-
-The `-Dcodesign=true` option is macOS-only. Future non-macOS secret store
-backends may need different platform-specific signing or trust setup.
-
-See [Code Signing for Keychain Development](./doc/codesign.md) for the full
-workflow and verification steps.
-
-For daily use, make the signed binary available on your `PATH`.
-
-Convenient release-oriented build steps are also available:
-
-```shell
-zig build release-safe
-zig build release-fast
-```
-
-Recommended default for distribution:
-
-```shell
-zig build release-safe
-```
+> The `-Dcodesign=true` option is macOS-only. Future non-macOS secret store backends may need different platform-specific signing or trust setup. See [Code Signing for Keychain Development](./doc/codesign.md) for the full workflow and verification steps.
 
 ## Quick Start
 

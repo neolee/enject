@@ -6,13 +6,13 @@ pub fn build(b: *std.Build) void {
     const codesign = resolveCodesignOptions(b, target);
     const enject_mod = addEnjectModule(b, target, optimize);
     const exe = addExecutableArtifact(b, target, optimize, enject_mod, "enject");
-    b.getInstallStep().dependOn(installExecutableArtifact(b, exe, "enject", codesign));
+    b.getInstallStep().dependOn(installExecutableArtifact(b, exe, codesign));
 
     const run_step = b.step("run", "Run the enject CLI");
     const run_cmd = b.addRunArtifact(exe);
     run_step.dependOn(&run_cmd.step);
     run_cmd.step.dependOn(b.getInstallStep());
-    if (b.args) |args| run_cmd.addArgs(args);
+    run_cmd.addPassthruArgs();
 
     const all_tests = b.addTest(.{
         .name = "all-tests",
@@ -137,6 +137,26 @@ fn addEnjectModule(
     return enject_mod;
 }
 
+fn createEnjectModule(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+) *std.Build.Module {
+    const toml_dep = b.dependency("toml", .{
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const enject_mod = b.createModule(.{
+        .root_source_file = b.path("src/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    enject_mod.addImport("toml", toml_dep.module("toml"));
+    linkPlatformLibs(enject_mod, target);
+    return enject_mod;
+}
+
 fn addExecutableArtifact(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
@@ -162,13 +182,12 @@ fn addExecutableArtifact(
 fn installExecutableArtifact(
     b: *std.Build,
     exe: *std.Build.Step.Compile,
-    name: []const u8,
     codesign: CodesignOptions,
 ) *std.Build.Step {
     const install = b.addInstallArtifact(exe, .{});
     if (!codesign.enabled) return &install.step;
 
-    const installed_path = b.getInstallPath(.bin, name);
+    const copied = b.addTempFiles().addCopyFile(exe.getEmittedBin(), exe.name);
     const sign = b.addSystemCommand(&.{
         "codesign",
         "--force",
@@ -177,10 +196,12 @@ fn installExecutableArtifact(
         "--timestamp=none",
         "--identifier",
         codesign.identifier,
-        installed_path,
     });
-    sign.step.dependOn(&install.step);
-    return &sign.step;
+    sign.addFileArg(copied);
+
+    const signed_install = b.addInstallBinFile(copied, exe.name);
+    signed_install.step.dependOn(&sign.step);
+    return &signed_install.step;
 }
 
 fn addReleaseStep(
@@ -191,8 +212,8 @@ fn addReleaseStep(
     step_name: []const u8,
     step_description: []const u8,
 ) void {
-    const enject_mod = addEnjectModule(b, target, optimize);
+    const enject_mod = createEnjectModule(b, target, optimize);
     const exe = addExecutableArtifact(b, target, optimize, enject_mod, "enject");
     const step = b.step(step_name, step_description);
-    step.dependOn(installExecutableArtifact(b, exe, "enject", codesign));
+    step.dependOn(installExecutableArtifact(b, exe, codesign));
 }

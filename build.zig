@@ -49,11 +49,16 @@ const CodesignOptions = struct {
 
 fn resolveCodesignOptions(b: *std.Build, target: std.Build.ResolvedTarget) CodesignOptions {
     const enabled = b.option(bool, "codesign", "Sign the installed enject binary with macOS codesign") orelse false;
-    const identity = b.option([]const u8, "codesign-identity", "macOS code signing identity") orelse
-        getEnvVar(b, "ENJECT_CODESIGN_IDENTITY");
-    const identifier = b.option([]const u8, "codesign-identifier", "macOS code signing identifier") orelse
-        getEnvVar(b, "ENJECT_CODESIGN_IDENTIFIER") orelse
-        "net.paradigmx.enject";
+    const identity_option = b.option([]const u8, "codesign-identity", "macOS code signing identity");
+    const identifier_option = b.option([]const u8, "codesign-identifier", "macOS code signing identifier");
+    const identity = identity_option orelse (if (enabled)
+        getUncachedEnvVar(b, "ENJECT_CODESIGN_IDENTITY")
+    else
+        null);
+    const identifier = identifier_option orelse (if (enabled)
+        getUncachedEnvVar(b, "ENJECT_CODESIGN_IDENTIFIER") orelse "net.paradigmx.enject"
+    else
+        "net.paradigmx.enject");
 
     if (enabled and identity == null) {
         @panic("codesign requested but no identity was provided; set ENJECT_CODESIGN_IDENTITY or pass -Dcodesign-identity");
@@ -69,7 +74,8 @@ fn resolveCodesignOptions(b: *std.Build, target: std.Build.ResolvedTarget) Codes
     };
 }
 
-fn getEnvVar(b: *std.Build, name: []const u8) ?[]const u8 {
+fn getUncachedEnvVar(b: *std.Build, name: []const u8) ?[]const u8 {
+    b.graph.poisonCache();
     return b.graph.environ_map.get(name);
 }
 
